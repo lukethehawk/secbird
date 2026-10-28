@@ -55,6 +55,10 @@ pub struct TraySettings {
     /// or left as they are when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub away_lights: Option<String>,
+    /// Experimental: use passive wireless mouse input to re-phase Spectrum
+    /// across devices after long inactivity. Disabled by default.
+    #[serde(default)]
+    pub spectrum_wake_sync: bool,
 }
 
 /// Choices for [`TraySettings::away_lights`], with the percent of the saved brightness.
