@@ -12,6 +12,7 @@ use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Instant;
 use windows_sys::core::GUID;
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -182,6 +183,8 @@ fn now_secs() -> u64 {
 enum DeviceEvent {
     Dpi { key: String, x: u16, y: u16 },
     OnboardProfile(u8),
+    /// First passive mouse input after its configured idle interval.
+    MouseWake(String),
 }
 
 /// Listener threads only block on a read, so a small stack is plenty.
@@ -537,6 +540,7 @@ impl App {
         self.warn_synapse(&synapse);
         self.check_battery();
         self.start_listeners();
+        self.start_wake_listeners();
         // A device that arrives (or wakes) while the PC is locked comes up lit.
         if let Some(percent) = TraySettings::load().away_percent().filter(|_| self.engine().is_away()) {
             self.engine().lights_away(percent);
@@ -602,6 +606,54 @@ impl App {
         }
     }
 
+    /// Observe only normal mouse input reports, never command a sleeping mouse
+    /// to answer an HID GET. A wake candidate is the first real input after
+    /// its sleep interval. Opening some mouse HID collections may be denied by
+    /// Windows; this is best effort and the manual sync button still works.
+    fn start_wake_listeners(&self) {
+        if !TraySettings::load().spectrum_wake_sync {
+            return;
+        }
+        let paths = self.engine().wake_paths();
+        for (key, path) in paths {
+            if !self.listening.lock().unwrap_or_else(|p| p.into_inner()).insert(path.clone()) {
+                continue;
+            }
+            let (device, idle) = {
+                let engine = self.engine();
+                (engine.open_events(&path), engine.wake_idle(&key))
+            };
+            let Some(device) = device else {
+                log::append(&format!("passive Spectrum wake: mouse input unavailable for {key}"));
+                self.listening.lock().unwrap_or_else(|p| p.into_inner()).remove(&path);
+                continue;
+            };
+            let (tx, listening, hwnd) = (self.events_tx.clone(), self.listening.clone(), self.hwnd as usize);
+            let path_for_thread = path.clone();
+            let spawned = std::thread::Builder::new().stack_size(LISTENER_STACK).spawn(move || {
+                let mut buf = [0u8; 64];
+                let mut last_input = Instant::now();
+                while let Ok(n) = device.read(&mut buf) {
+                    if n == 0 { continue; }
+                    let now = Instant::now();
+                    let long_idle = now.duration_since(last_input) >= idle;
+                    last_input = now;
+                    if long_idle {
+                        if tx.send(DeviceEvent::MouseWake(key.clone())).is_err() {
+                            break;
+                        }
+                        unsafe { PostMessageW(hwnd as HWND, WM_DEVICE_EVENT, 0, 0) };
+                    }
+                }
+                listening.lock().unwrap_or_else(|p| p.into_inner()).remove(&path_for_thread);
+            });
+            if spawned.is_err() {
+                self.listening.lock().unwrap_or_else(|p| p.into_inner()).remove(&path);
+                log::append("passive Spectrum wake: could not start a mouse listener");
+            }
+        }
+    }
+
     fn device_events(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
@@ -614,6 +666,14 @@ impl App {
                 DeviceEvent::OnboardProfile(n) => {
                     if !TraySettings::load().popups_off {
                         osd::show(&format!("On-board profile {n}"));
+                    }
+                }
+                DeviceEvent::MouseWake(key) => {
+                    if TraySettings::load().spectrum_wake_sync {
+                        let zones = self.engine().resync_spectrum(Some(&key));
+                        if zones > 0 {
+                            log::append(&format!("passive Spectrum wake: resynced {zones} zones after mouse {key} input"));
+                        }
                     }
                 }
             }
