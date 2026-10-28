@@ -1,6 +1,6 @@
 //! Device and profile handling for the tray, kept free of Win32 code.
 
-use secbird_core::{config_dir, discover, hidapi::HidApi, Db, Device, Dimming, Result, Store};
+use secbird_core::{config_dir, discover, effects::Effect, hidapi::HidApi, Db, Device, Dimming, Result, Store};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -104,6 +104,82 @@ impl Engine {
                     .map(move |i| (dev.key(), i.path().to_owned()))
             })
             .collect()
+    }
+
+    /// Standard USB mouse input collections, not feature-report endpoints.
+    /// A blocking read of real motion/wheel activity can detect the first input
+    /// after a long idle period without actively querying (and waking) the mouse.
+    pub fn wake_paths(&self) -> Vec<(String, std::ffi::CString)> {
+        self.devices.iter()
+            .filter(|d| d.spec.as_ref().is_some_and(|s| s.wireless && s.kind == secbird_core::Kind::Mouse))
+            .flat_map(|dev| {
+                self.api.device_list()
+                    .filter(move |i| {
+                        i.vendor_id() == secbird_core::db::RAZER_VID
+                            && i.product_id() == dev.pid
+                            && i.usage_page() == 0x0001
+                            && i.usage() == 0x0002
+                    })
+                    .map(move |i| (dev.key(), i.path().to_owned()))
+            })
+            .collect()
+    }
+
+    /// Minimum inactivity before treating the next actual mouse input as a wake
+    /// candidate. The mouse may take longer than the configured timer to sleep.
+    pub fn wake_idle(&self, key: &str) -> Duration {
+        let minutes = self.devices.iter().find(|d| d.key() == key)
+            .and_then(|d| d.sleep_timer().ok().flatten().map(|s| s.minutes))
+            .unwrap_or(5);
+        Duration::from_secs(u64::from(minutes).clamp(1, 60) * 60)
+    }
+
+    /// Restart the hardware spectrum engines together. Only touches zones with
+    /// Spectrum selected in the *effective* profiles; never alters the profiles.
+    /// A wake request must come from one of those devices and there must be at
+    /// least two participating devices. A manual request uses no wake key.
+    pub fn resync_spectrum(&self, wake_key: Option<&str>) -> usize {
+        if self.away.is_some() {
+            return 0;
+        }
+        let Ok(mut store) = Self::store() else { return 0 };
+        let mut targets = Vec::new();
+        let mut distinct = HashSet::new();
+        for dev in &self.devices {
+            let p = store.for_device(dev);
+            if p.lighting_off {
+                continue;
+            }
+            let name = p.effective(self.foreground()).to_string();
+            let Some(profile) = p.profiles.get(&name) else { continue };
+            if let Some(spec) = &dev.spec {
+                for led in &spec.leds {
+                    if profile.lighting.get(&led.name).is_some_and(|z| {
+                        !z.off && z.effect.as_ref() == Some(&Effect::Spectrum)
+                    }) {
+                        distinct.insert(dev.key());
+                        targets.push((dev, led.id));
+                    }
+                }
+            }
+        }
+        if distinct.len() < 2 || wake_key.is_some_and(|key| !distinct.contains(key)) {
+            return 0;
+        }
+        // The just-woken mouse must accept the write first; if it has not
+        // reconnected yet, do not restart the other devices out of phase.
+        if let Some(key) = wake_key {
+            targets.sort_by_key(|(dev, _)| dev.key() != key);
+        }
+        let mut synced = 0;
+        for (dev, led) in targets {
+            if dev.set_effect(led, &Effect::Spectrum).is_ok() {
+                synced += 1;
+            } else if wake_key.is_some_and(|key| dev.key() == key) {
+                return 0;
+            }
+        }
+        synced
     }
 
     pub fn open_events(&self, path: &std::ffi::CStr) -> Option<secbird_core::hidapi::HidDevice> {
