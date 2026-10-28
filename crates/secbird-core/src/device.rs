@@ -205,7 +205,7 @@ fn connected_mouse_pid(args: &[u8]) -> Option<u16> {
 fn shared_receiver_mouse(args: &[u8], db: &Db) -> Option<u16> {
     let count = usize::from(*args.first()?);
     let entries = args.get(1..1 + count.checked_mul(3)?)?;
-    let mut mice = entries.chunks_exact(3).filter_map(|entry| {
+    let mut mice = entries.as_chunks::<3>().0.iter().filter_map(|entry| {
         let pid = u16::from_be_bytes([entry[1], entry[2]]);
         (entry[0] == 1 && db.get(pid).is_some_and(|s| s.kind == Kind::Mouse)).then_some(pid)
     });
