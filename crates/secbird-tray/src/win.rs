@@ -1,4 +1,5 @@
 use crate::engine::{ApplyReport, Battery, Engine};
+use crate::wake_sync::{WakeTracker, BASILISK, BLACKWIDOW};
 use secbird_core::log;
 use std::collections::{HashMap, HashSet};
 use crate::settings::{autostart_enabled, open_config_folder, set_autostart, TraySettings};
@@ -21,6 +22,7 @@ use windows_sys::Win32::System::RemoteDesktop::{WTSRegisterSessionNotification, 
 use windows_sys::Win32::System::SystemServices::GUID_CONSOLE_DISPLAY_STATE;
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
+use windows_sys::Win32::UI::Input::*;
 use windows_sys::Win32::UI::Shell::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -75,6 +77,9 @@ const BUTTONS_AGAIN_SECS: u64 = 60;
 /// set to stay lit get a read on the same beat (#34).
 const TIMER_LIGHTS: usize = 7;
 const LIGHTS_MS: u32 = 3_000;
+/// Single delayed restart after input activity proves both devices are awake.
+const TIMER_SPECTRUM_WAKE: usize = 8;
+const SPECTRUM_SETTLE_MS: u32 = 1_500;
 
 const ID_REAPPLY: u32 = 1;
 const ID_FOLDER: u32 = 2;
@@ -136,6 +141,9 @@ struct App {
     /// The session is locked, or the screen is off: the lights go down if set (#48).
     locked: bool,
     screen_off: bool,
+    /// Raw Input hDevice -> Razer physical PID, looked up once per handle.
+    raw_devices: HashMap<isize, Option<u16>>,
+    wake_tracker: WakeTracker,
 }
 
 /// What clicking a notification does.
@@ -183,8 +191,6 @@ fn now_secs() -> u64 {
 enum DeviceEvent {
     Dpi { key: String, x: u16, y: u16 },
     OnboardProfile(u8),
-    /// First passive mouse input after its configured idle interval.
-    MouseWake(String),
 }
 
 /// Listener threads only block on a read, so a small stack is plenty.
@@ -269,6 +275,9 @@ pub fn run() {
             null(),
         );
         TASKBAR_CREATED.store(RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()), Ordering::Relaxed);
+        if TraySettings::load().spectrum_wake_sync {
+            register_wake_raw_input(hwnd);
+        }
         register_hid_notifications(hwnd);
         // Locking and the screen turning off, for the lights while away (#48). Windows
         // sends the display state once right away.
@@ -320,6 +329,8 @@ pub fn run() {
                 installs,
                 locked: false,
                 screen_off: false,
+                raw_devices: HashMap::new(),
+                wake_tracker: WakeTracker::default(),
             })
         });
         log::append("tray started");
@@ -366,6 +377,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_DEVICE_EVENT => {
             with_app(|app| app.device_events());
             0
+        }
+        WM_INPUT => {
+            with_app(|app| app.raw_input(lparam));
+            // Required for foreground raw input cleanup; harmless for INPUTSINK.
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_FIRMWARE => {
             with_app(|app| app.firmware_news());
@@ -475,6 +491,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             });
             0
         }
+        WM_TIMER if wparam == TIMER_SPECTRUM_WAKE => {
+            KillTimer(hwnd, TIMER_SPECTRUM_WAKE);
+            with_app(|app| {
+                let zones = app.engine().resync_spectrum(None);
+                app.wake_tracker.finished();
+                log::append(&format!("Spectrum wake: restarted {zones} zones on keyboard/mouse"));
+            });
+            0
+        }
         WM_TIMER if wparam == TIMER_FOREGROUND => {
             KillTimer(hwnd, TIMER_FOREGROUND);
             if with_app(|app| app.foreground_changed()).is_none() {
@@ -495,6 +520,45 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             0
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+
+/// Register as a background observer (never RIDEV_NOLEGACY) so Windows keeps
+/// delivering ordinary mouse and keyboard input to the user's applications.
+unsafe fn register_wake_raw_input(hwnd: HWND) {
+    let devices = [
+        RAWINPUTDEVICE { usUsagePage: 0x01, usUsage: 0x02, dwFlags: RIDEV_INPUTSINK, hwndTarget: hwnd },
+        RAWINPUTDEVICE { usUsagePage: 0x01, usUsage: 0x06, dwFlags: RIDEV_INPUTSINK, hwndTarget: hwnd },
+    ];
+    if RegisterRawInputDevices(devices.as_ptr(), devices.len() as u32, size_of::<RAWINPUTDEVICE>() as u32) == 0 {
+        log::append("Spectrum wake: failed to register Raw Input; manual synchronization remains available");
+    } else {
+        log::append("Spectrum wake: background Raw Input enabled for mouse and keyboard");
+    }
+}
+
+/// Raw Input device names identify the physical receiver regardless of whether
+/// another mouse/keyboard is also attached. Ignore virtual and unrelated devices.
+unsafe fn raw_input_razer_pid(device: windows_sys::Win32::Foundation::HANDLE) -> Option<u16> {
+    if device.is_null() {
+        return None;
+    }
+    let mut chars = 0u32;
+    if GetRawInputDeviceInfoW(device, RIDI_DEVICENAME, null_mut(), &mut chars) == u32::MAX || chars == 0 || chars > 1024 {
+        return None;
+    }
+    let mut buffer = vec![0u16; chars as usize];
+    if GetRawInputDeviceInfoW(device, RIDI_DEVICENAME, buffer.as_mut_ptr().cast(), &mut chars) == u32::MAX {
+        return None;
+    }
+    let name = String::from_utf16_lossy(&buffer).to_ascii_uppercase();
+    if name.contains("VID_1532&PID_02C9") {
+        Some(BLACKWIDOW)
+    } else if name.contains("VID_1532&PID_00EA") {
+        Some(BASILISK)
+    } else {
+        None
     }
 }
 
@@ -540,7 +604,7 @@ impl App {
         self.warn_synapse(&synapse);
         self.check_battery();
         self.start_listeners();
-        self.start_wake_listeners();
+        self.raw_devices.clear();
         // A device that arrives (or wakes) while the PC is locked comes up lit.
         if let Some(percent) = TraySettings::load().away_percent().filter(|_| self.engine().is_away()) {
             self.engine().lights_away(percent);
@@ -606,50 +670,37 @@ impl App {
         }
     }
 
-    /// Observe only normal mouse input reports, never command a sleeping mouse
-    /// to answer an HID GET. A wake candidate is the first real input after
-    /// its sleep interval. Opening some mouse HID collections may be denied by
-    /// Windows; this is best effort and the manual sync button still works.
-    fn start_wake_listeners(&self) {
-        if !TraySettings::load().spectrum_wake_sync {
+    /// Only raw input from the physically identified Razer keyboard and mouse
+    /// counts. Read a short event HEADER, not an HID feature report; no polling.
+    fn raw_input(&mut self, lparam: LPARAM) {
+        let mut header: RAWINPUTHEADER = unsafe { zeroed() };
+        let mut size = size_of::<RAWINPUTHEADER>() as u32;
+        let got = unsafe {
+            GetRawInputData(
+                lparam as HRAWINPUT,
+                RID_HEADER,
+                (&mut header as *mut RAWINPUTHEADER).cast(),
+                &mut size,
+                size_of::<RAWINPUTHEADER>() as u32,
+            )
+        };
+        if got == u32::MAX || got != size_of::<RAWINPUTHEADER>() as u32 {
             return;
         }
-        let paths = self.engine().wake_paths();
-        for (key, path) in paths {
-            if !self.listening.lock().unwrap_or_else(|p| p.into_inner()).insert(path.clone()) {
-                continue;
+        if header.dwType != RIM_TYPEMOUSE && header.dwType != RIM_TYPEKEYBOARD {
+            return;
+        }
+        let handle = header.hDevice as isize;
+        let pid = *self.raw_devices.entry(handle).or_insert_with(|| {
+            let found = unsafe { raw_input_razer_pid(header.hDevice) };
+            if let Some(pid) = found {
+                log::append(&format!("Spectrum wake: observing raw input PID {pid:04X}"));
             }
-            let (device, idle) = {
-                let engine = self.engine();
-                (engine.open_events(&path), engine.wake_idle(&key))
-            };
-            let Some(device) = device else {
-                log::append(&format!("passive Spectrum wake: mouse input unavailable for {key}"));
-                self.listening.lock().unwrap_or_else(|p| p.into_inner()).remove(&path);
-                continue;
-            };
-            let (tx, listening, hwnd) = (self.events_tx.clone(), self.listening.clone(), self.hwnd as usize);
-            let path_for_thread = path.clone();
-            let spawned = std::thread::Builder::new().stack_size(LISTENER_STACK).spawn(move || {
-                let mut buf = [0u8; 64];
-                let mut last_input = Instant::now();
-                while let Ok(n) = device.read(&mut buf) {
-                    if n == 0 { continue; }
-                    let now = Instant::now();
-                    let long_idle = now.duration_since(last_input) >= idle;
-                    last_input = now;
-                    if long_idle {
-                        if tx.send(DeviceEvent::MouseWake(key.clone())).is_err() {
-                            break;
-                        }
-                        unsafe { PostMessageW(hwnd as HWND, WM_DEVICE_EVENT, 0, 0) };
-                    }
-                }
-                listening.lock().unwrap_or_else(|p| p.into_inner()).remove(&path_for_thread);
-            });
-            if spawned.is_err() {
-                self.listening.lock().unwrap_or_else(|p| p.into_inner()).remove(&path);
-                log::append("passive Spectrum wake: could not start a mouse listener");
+            found
+        });
+        if let Some(pid) = pid {
+            if self.wake_tracker.input(pid, Instant::now()) {
+                unsafe { SetTimer(self.hwnd, TIMER_SPECTRUM_WAKE, SPECTRUM_SETTLE_MS, None) };
             }
         }
     }
@@ -666,14 +717,6 @@ impl App {
                 DeviceEvent::OnboardProfile(n) => {
                     if !TraySettings::load().popups_off {
                         osd::show(&format!("On-board profile {n}"));
-                    }
-                }
-                DeviceEvent::MouseWake(key) => {
-                    if TraySettings::load().spectrum_wake_sync {
-                        let zones = self.engine().resync_spectrum(Some(&key));
-                        if zones > 0 {
-                            log::append(&format!("passive Spectrum wake: resynced {zones} zones after mouse {key} input"));
-                        }
                     }
                 }
             }
