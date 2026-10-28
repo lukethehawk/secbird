@@ -1,0 +1,30 @@
+name: Test shared HyperSpeed receiver support
+
+on:
+  push:
+    branches: [test-02c9-shared-hyperspeed-receiver]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --release --all-targets -- -D warnings
+      - name: Rust tests
+        run: cargo test --release
+      - name: Build CLI and tray
+        run: cargo build --release
+      - name: Upload test binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: secbird-shared-hyperspeed-windows-test
+          path: |
+            target/release/secbird.exe
+            target/release/secbird-tray.exe
+          retention-days: 7
