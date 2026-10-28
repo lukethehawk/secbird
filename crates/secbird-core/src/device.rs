@@ -28,6 +28,8 @@ pub struct Device {
     pub path: CString,
     pub txid: u8,
     pub spec: Option<DeviceSpec>,
+    /// Require matching replies for logical devices sharing one physical receiver.
+    strict_txid: bool,
 }
 
 impl Device {
@@ -116,12 +118,12 @@ impl Device {
     /// Send one command and wait for its reply. `size` is the argument length the
     /// device expects for this command.
     pub fn transact(&self, command: Command, size: u8, args: &[u8]) -> Result<Report> {
-        transact(self.transport.as_ref(), self.txid, command, size, args, READ_RETRIES, false)
+        transact(self.transport.as_ref(), self.txid, command, size, args, READ_RETRIES, self.strict_txid)
     }
 
     /// [`Device::transact`] for commands that write flash and answer slowly.
     pub(crate) fn transact_slow(&self, command: Command, size: u8, args: &[u8]) -> Result<Report> {
-        transact(self.transport.as_ref(), self.txid, command, size, args, FLASH_RETRIES, false)
+        transact(self.transport.as_ref(), self.txid, command, size, args, FLASH_RETRIES, self.strict_txid)
     }
 
     /// [`Device::transact`] with another transaction id (see [`DOCK_TXID`]).
@@ -174,6 +176,13 @@ pub const DOCK_LED: u8 = 0x0F;
 /// The HyperPolling wireless dongle. It answers for the mouse paired to it.
 pub(crate) const HYPERPOLLING_DONGLE: u16 = 0x00B3;
 
+/// The BlackWidow V4 Low-Profile HyperSpeed's 2.4 GHz receiver enumerates
+/// as 02C9, even when an additional mouse is paired. Verified with a real
+/// 02C9 + 00EA pair: FF addresses the keyboard, 1F the mouse.
+const BW_V4_LOW_PROFILE_RECEIVER: u16 = 0x02C9;
+const BW_V4_LOW_PROFILE_KEYBOARD_TXID: u8 = 0xFF;
+const BW_V4_LOW_PROFILE_MOUSE_TXID: u8 = 0x1F;
+
 /// Mice that pair with the Mouse Dock Pro (Synapse's `DualDongleCompatibleDevices.json`).
 const DOCK_PRO_MICE: [u16; 11] =
     [0x00A8, 0x00AB, 0x00B0, 0x00CD, 0x00D7, 0x00DB, 0x00DF, 0x00E3, 0x00E8, 0x00EA, 0xB00B];
@@ -188,6 +197,20 @@ fn connected_mouse_pid(args: &[u8]) -> Option<u16> {
     });
     let pid = connected.next()?;
     connected.next().is_none().then_some(pid)
+}
+
+/// A connected, known mouse sharing this keyboard receiver. Ignore the
+/// keyboard's own slot; the general dock parser above intentionally handles
+/// a different case (exactly one connected device).
+fn shared_receiver_mouse(args: &[u8], db: &Db) -> Option<u16> {
+    let count = usize::from(*args.first()?);
+    let entries = args.get(1..1 + count.checked_mul(3)?)?;
+    let mut mice = entries.chunks_exact(3).filter_map(|entry| {
+        let pid = u16::from_be_bytes([entry[1], entry[2]]);
+        (entry[0] == 1 && db.get(pid).is_some_and(|s| s.kind == Kind::Mouse)).then_some(pid)
+    });
+    let first = mice.next()?;
+    mice.next().is_none().then_some(first)
 }
 
 /// `exact`: only accept a reply carrying our txid. A dock forwards the docked mouse's
@@ -264,6 +287,9 @@ fn discover_hid(api: &HidApi, db: &Db) -> Vec<Device> {
     pids.into_iter()
         .filter_map(|pid| -> Option<Vec<Device>> {
             let spec = db.spec(pid);
+            if pid == BW_V4_LOW_PROFILE_RECEIVER {
+                return discover_blackwidow_shared_receiver(api, &all, db);
+            }
             let mut ifaces: Vec<&Candidate> = all.iter().filter(|c| c.pid == pid).collect();
             // Known interface first; the rest still get a chance.
             if let Some(want) = spec.as_ref().and_then(|s| s.interface) {
@@ -289,6 +315,50 @@ fn discover_hid(api: &HidApi, db: &Db) -> Vec<Device> {
         })
         .flatten()
         .collect()
+}
+
+/// Discover each logical device through its own transaction ID while both
+/// share the same physical HID interface and USB PID. Never probe the keyboard
+/// using the mouse's 1F replies: that would route subsequent RGB writes to the
+/// wrong device. A sleeping/disconnected mouse is omitted until the next rescan.
+fn discover_blackwidow_shared_receiver(api: &HidApi, all: &[Candidate], db: &Db) -> Option<Vec<Device>> {
+    let keyboard_spec = db.spec(BW_V4_LOW_PROFILE_RECEIVER)?;
+    let mut ifaces: Vec<&Candidate> = all.iter().filter(|c| c.pid == BW_V4_LOW_PROFILE_RECEIVER).collect();
+    ifaces.sort_by_key(|c| c.interface != keyboard_spec.interface.unwrap_or(2));
+    for candidate in ifaces {
+        let Some(keyboard) = probe_exact(api, candidate, BW_V4_LOW_PROFILE_RECEIVER,
+            BW_V4_LOW_PROFILE_KEYBOARD_TXID, Some(keyboard_spec.clone())) else { continue };
+
+        let mouse_pid = keyboard
+            .get(cmd::WIRELESS_DEVICES, cmd::WIRELESS_DEVICES_SIZE, &[])
+            .ok()
+            .and_then(|reply| shared_receiver_mouse(reply.args(), db));
+        let mut devices = vec![keyboard];
+        if let Some(mouse_pid) = mouse_pid {
+            if let Some(mouse) = probe_exact(api, candidate, mouse_pid,
+                BW_V4_LOW_PROFILE_MOUSE_TXID, db.spec(mouse_pid)) {
+                devices.push(mouse);
+            }
+        }
+        return Some(devices);
+    }
+    None
+}
+
+/// Open a logical device on a shared receiver using an EXACT transaction ID.
+/// The mouse's actual serial (not the receiver's) becomes its profile identity.
+fn probe_exact(api: &HidApi, candidate: &Candidate, logical_pid: u16, txid: u8,
+    spec: Option<DeviceSpec>) -> Option<Device> {
+    let hid = api.open_path(&candidate.path).ok()?;
+    let reply = transact(&hid, txid, cmd::SERIAL.get(), cmd::SERIAL_SIZE, &[], READ_RETRIES, true).ok()?;
+    let serial = parse_serial(reply.args());
+    if serial.is_empty() {
+        return None;
+    }
+    Some(Device {
+        transport: Box::new(hid), pid: logical_pid, serial, interface: candidate.interface,
+        path: candidate.path.clone(), txid, spec, strict_txid: true,
+    })
 }
 
 fn probe(api: &HidApi, c: &Candidate, txids: &[u8], spec: Option<DeviceSpec>) -> Option<Device> {
@@ -335,7 +405,7 @@ impl Device {
             transact(transport.as_ref(), t, cmd::SERIAL.get(), cmd::SERIAL_SIZE, &[], READ_RETRIES, false).ok().map(|r| (t, r))
         })?;
         let serial = parse_serial(reply.args());
-        Some(Device { transport, pid, serial, interface, path, txid, spec })
+        Some(Device { transport, pid, serial, interface, path, txid, spec, strict_txid: false })
     }
 }
 
@@ -349,7 +419,8 @@ pub fn unanswered(api: &HidApi, found: &[Device]) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{connected_mouse_pid, parse_serial};
+    use super::{connected_mouse_pid, parse_serial, shared_receiver_mouse};
+    use crate::db::Db;
 
     #[test]
     fn paired_mice_reply_needs_exactly_one_connected_mouse() {
@@ -361,6 +432,19 @@ mod tests {
         ] {
             assert_eq!(connected_mouse_pid(args), None, "{args:?}");
         }
+    }
+
+    #[test]
+    fn shared_receiver_keeps_mouse_and_keyboard_distinct() {
+        let db = Db::builtin().unwrap();
+        // Actual 02C9 receiver reports from the BlackWidow + Basilisk V4.
+        let both_on = [2, 1, 0, 0xEA, 1, 2, 0xC9];
+        let mouse_off = [2, 0, 0, 0xEA, 1, 2, 0xC9];
+        assert_eq!(shared_receiver_mouse(&both_on, &db), Some(0x00EA));
+        assert_eq!(shared_receiver_mouse(&mouse_off, &db), None);
+        assert_eq!(shared_receiver_mouse(&[2, 1, 2, 0xC9, 1, 0, 0xEA], &db), Some(0x00EA));
+        assert_eq!(shared_receiver_mouse(&[2, 0, 0, 0xEA, 0, 2, 0xC9], &db), None);
+        assert_eq!(shared_receiver_mouse(&[2, 1, 0, 0xEA], &db), None);
     }
 
     #[test]
