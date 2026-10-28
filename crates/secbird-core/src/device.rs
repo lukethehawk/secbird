@@ -118,16 +118,19 @@ impl Device {
     /// Send one command and wait for its reply. `size` is the argument length the
     /// device expects for this command.
     pub fn transact(&self, command: Command, size: u8, args: &[u8]) -> Result<Report> {
+        diagnostic_readonly_guard(command)?;
         transact(self.transport.as_ref(), self.txid, command, size, args, READ_RETRIES, self.strict_txid)
     }
 
     /// [`Device::transact`] for commands that write flash and answer slowly.
     pub(crate) fn transact_slow(&self, command: Command, size: u8, args: &[u8]) -> Result<Report> {
+        diagnostic_readonly_guard(command)?;
         transact(self.transport.as_ref(), self.txid, command, size, args, FLASH_RETRIES, self.strict_txid)
     }
 
     /// [`Device::transact`] with another transaction id (see [`DOCK_TXID`]).
     pub fn transact_as(&self, txid: u8, command: Command, size: u8, args: &[u8]) -> Result<Report> {
+        diagnostic_readonly_guard(command)?;
         transact(self.transport.as_ref(), txid, command, size, args, READ_RETRIES, true)
     }
 
@@ -150,6 +153,16 @@ impl Device {
             format!("{:04X}:{}", self.pid, self.serial)
         }
     }
+}
+
+/// This branch produces a diagnostic build. With the build-time switch enabled,
+/// prevent ANY Protocol 2.5 SET command reaching hardware, including UI requests.
+/// All normal CI tests compile without the switch and remain unchanged.
+fn diagnostic_readonly_guard(command: Command) -> Result<()> {
+    if option_env!("SECBIRD_DIAGNOSTIC_READONLY").is_some() && (command.id & 0x80 == 0) {
+        return Err(Error::InvalidArg("read-only diagnostic build: device writes disabled".into()));
+    }
+    Ok(())
 }
 
 /// Serial from a GET serial reply: printable ASCII only; placeholders count as none.
