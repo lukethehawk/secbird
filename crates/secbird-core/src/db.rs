@@ -256,6 +256,17 @@ mod tests {
     }
 
     #[test]
+    fn basilisk_v4_hyperspeed_has_one_underglow_zone() {
+        let db = Db::builtin().unwrap();
+        for pid in [0x00EA, 0x00EB] {
+            let spec = db.get(pid).expect("Basilisk V4 HyperSpeed");
+            assert_eq!(spec.leds.len(), 1, "PID {pid:04X}: exactly one RGB zone");
+            assert_eq!(spec.leds[0].name, "underglow");
+            assert_eq!(spec.leds[0].id, 10);
+        }
+    }
+
+    #[test]
     fn builtin_entries_are_sane() {
         let text = BUILTIN;
         let list: Vec<DeviceSpec> = serde_json::from_str(text).unwrap();
