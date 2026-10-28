@@ -96,6 +96,10 @@ pub struct DeviceSpec {
     pub lighting: Lighting,
     #[serde(default)]
     pub leds: Vec<Led>,
+    /// Effect names that were tested on this model but did not work correctly.
+    /// Used by the editor and enforced before sending lighting commands.
+    #[serde(default)]
+    pub unsupported_effects: Vec<String>,
     #[serde(default)]
     pub matrix: Option<Matrix>,
     #[serde(default)]
@@ -263,6 +267,7 @@ mod tests {
             assert_eq!(spec.leds.len(), 1, "PID {pid:04X}: exactly one RGB zone");
             assert_eq!(spec.leds[0].name, "underglow");
             assert_eq!(spec.leds[0].id, 10);
+            assert_eq!(spec.unsupported_effects, ["reactive", "starlight"]);
         }
     }
 
