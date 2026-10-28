@@ -2347,9 +2347,9 @@ function renderSettings() {
   const startup = group('Startup and games',
     row('Start with Windows', 'Your settings go back on as soon as you sign in. Off means they only apply while Secretarybird is running.', ...traySwitch('autostart', 'Start with Windows')),
     row('Switch profiles with games', 'A profile tied to a program comes up while that program is in front, and goes back after.', ...traySwitch('auto_switch', 'Switch profiles with games')),
-    row('Re-sync Spectrum after mouse inactivity (experimental)',
-      'Restarts matching Spectrum effects on the mouse and keyboard when mouse input resumes after its idle interval. No active device polling. Restart Secretarybird after enabling.',
-      ...traySwitch('spectrum_wake_sync', 'Re-sync Spectrum after mouse inactivity')),
+    row('Re-sync Spectrum when either device wakes (experimental)',
+      'Detects which device wakes first (mouse or keyboard) using Windows Raw Input. Restarts Spectrum when both have resumed input after inactivity. No HID polling; restart Secretarybird after enabling.',
+      ...traySwitch('spectrum_wake_sync', 'Re-sync Spectrum when either device wakes')),
     row('Re-sync Spectrum now',
       'Restart Spectrum cycling on all connected devices that already use the Spectrum effect. Other effects and colors are left untouched.',
       el('button', { className: 'ghost', textContent: 'Re-sync now', onclick: async e => {
