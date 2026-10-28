@@ -1526,8 +1526,9 @@ function effectGroup(name) {
   const note = el('p', { className: 'note' });
   const show = () => {
     const k = sel.value;
-    note.textContent = cur && unsupported.includes(kind0)
-      ? 'The saved ' + kind0 + ' effect is not supported on this device. Choose an available effect to replace it.'
+    const savedKind = (zoneOf(dev.profile, name).effect || '').split(':')[0];
+    note.textContent = savedKind && unsupported.includes(savedKind)
+      ? 'The saved ' + savedKind + ' effect is not supported on this device. Choose an available effect to replace it.'
       : k === 'battery'
       ? 'Green when the mouse is charged, through yellow and orange to red when it’s nearly empty. Secretarybird updates it every 5 minutes.'
       : 'Runs on the device itself. Not every device has every effect; it says so if not.';
@@ -1547,6 +1548,7 @@ function effectGroup(name) {
     try {
       await api('/api/effect', { zone: name, effect: text });
       record(name, { effect: text, off: false });
+      show();
       toast(effectLabel(text) + ' · saved to ' + dev.active);
     } catch (e) {
       toast(e.message, true);
