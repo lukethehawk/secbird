@@ -45,10 +45,6 @@ impl WakeTracker {
         self.pending_wake = false;
     }
 
-    pub fn forget_device_handles(&mut self) {
-        // Keep activity across Windows HID collection enumeration;
-        // a raw input event from a new handle can still indicate wake.
-    }
 }
 
 #[cfg(test)]
