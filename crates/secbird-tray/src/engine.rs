@@ -106,34 +106,6 @@ impl Engine {
             .collect()
     }
 
-    /// Standard USB mouse input collections, not feature-report endpoints.
-    /// A blocking read of real motion/wheel activity can detect the first input
-    /// after a long idle period without actively querying (and waking) the mouse.
-    pub fn wake_paths(&self) -> Vec<(String, std::ffi::CString)> {
-        self.devices.iter()
-            .filter(|d| d.spec.as_ref().is_some_and(|s| s.wireless && s.kind == secbird_core::Kind::Mouse))
-            .flat_map(|dev| {
-                self.api.device_list()
-                    .filter(move |i| {
-                        i.vendor_id() == secbird_core::db::RAZER_VID
-                            && i.product_id() == dev.pid
-                            && i.usage_page() == 0x0001
-                            && i.usage() == 0x0002
-                    })
-                    .map(move |i| (dev.key(), i.path().to_owned()))
-            })
-            .collect()
-    }
-
-    /// Minimum inactivity before treating the next actual mouse input as a wake
-    /// candidate. The mouse may take longer than the configured timer to sleep.
-    pub fn wake_idle(&self, key: &str) -> Duration {
-        let minutes = self.devices.iter().find(|d| d.key() == key)
-            .and_then(|d| d.sleep_timer().ok().flatten().map(|s| s.minutes))
-            .unwrap_or(5);
-        Duration::from_secs(u64::from(minutes).clamp(1, 60) * 60)
-    }
-
     /// Restart the hardware spectrum engines together. Only touches zones with
     /// Spectrum selected in the *effective* profiles; never alters the profiles.
     /// A wake request must come from one of those devices and there must be at
