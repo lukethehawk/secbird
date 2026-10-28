@@ -1,0 +1,24 @@
+name: Build read-only HyperSpeed diagnostic CLI
+
+on:
+  push:
+    branches: [test-hyperspeed-multidevice-diagnostics]
+  workflow_dispatch:
+
+jobs:
+  diagnostic:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run Rust tests
+        run: cargo test --release -p secbird-core -p secbird
+      - name: Build standalone diagnostic CLI
+        run: cargo build --release -p secbird
+      - name: Upload portable CLI (do not overwrite the installed copy)
+        uses: actions/upload-artifact@v4
+        with:
+          name: secbird-readonly-hyperspeed-diagnostic
+          path: target/release/secbird.exe
+          retention-days: 7
