@@ -251,6 +251,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn model_unsupported_effects_never_reach_hardware() {
+        let sim = crate::sim::Sim::mouse();
+        let mut spec = crate::sim::Sim::spec_for(crate::sim::MOUSE_PID).unwrap();
+        spec.unsupported_effects = vec!["reactive".into(), "starlight".into()];
+        let dev = sim.open(crate::sim::MOUSE_PID, Some(spec)).unwrap();
+        let before = sim.state().log.len();
+        for unsupported in [
+            Effect::Reactive { color: Rgb(0xFF, 0, 0), duration: 2 },
+            Effect::Starlight { colors: vec![], duration: 2 },
+        ] {
+            assert!(!dev.supports_effect(&unsupported));
+            assert!(matches!(dev.set_effect(10, &unsupported), Err(Error::Unsupported(_))));
+            assert_eq!(sim.state().log.len(), before, "unsupported effect sent HID traffic");
+        }
+        assert!(dev.supports_effect(&Effect::Spectrum));
+        dev.set_effect(10, &Effect::Spectrum).unwrap();
+        assert!(sim.state().log.len() > before, "supported effects must still be written");
+    }
+
+    #[test]
     fn effects_round_trip_through_text() {
         for text in [
             "spectrum",
