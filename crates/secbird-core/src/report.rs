@@ -37,6 +37,13 @@ pub struct Probe {
     pub reply: String,
 }
 
+/// Read-only probes using an explicit transaction ID on a shared receiver.
+#[derive(Debug, Clone, Serialize)]
+pub struct TxidDiagnostic {
+    pub txid: String,
+    pub probes: Vec<Probe>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DeviceReport {
     pub pid: String,
@@ -57,6 +64,9 @@ pub struct DeviceReport {
     pub dock: Vec<Probe>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dock_leds: Vec<u8>,
+    /// For BlackWidow V4 HyperSpeed multi-device receivers: compare each routed endpoint.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub txid_diagnostics: Vec<TxidDiagnostic>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -218,6 +228,13 @@ pub fn probe(dev: &Device, simulated: bool) -> DeviceReport {
     let dock_txid = dev.is_mouse_dock() && dev.txid != DOCK_TXID;
     let dock = if dock_txid { DOCK_PROBES.iter().map(|p| run(DOCK_TXID, p)).collect() } else { Vec::new() };
     let dock_leds = if dock_txid { leds_at(DOCK_TXID) } else { Vec::new() };
+    // The 02C9 dongle can carry a BlackWidow and a Basilisk together, but
+    // Windows exposes one USB PID. Do not infer which device owns each reply.
+    let txid_diagnostics = if dev.pid == 0x02C9 && !simulated {
+        probe_multidevice_txids(dev)
+    } else {
+        Vec::new()
+    };
     DeviceReport {
         pid: format!("{:04X}", dev.pid),
         name: dev.name(),
@@ -236,7 +253,52 @@ pub fn probe(dev: &Device, simulated: bool) -> DeviceReport {
         leds,
         dock,
         dock_leds,
+        txid_diagnostics,
     }
+}
+
+/// Compare two observed transaction IDs. This is report-only and never writes
+/// to hardware or creates a second logical device. Strict response matching
+/// avoids accepting a 1F reply as evidence for the FF endpoint (or vice versa).
+fn probe_multidevice_txids(dev: &Device) -> Vec<TxidDiagnostic> {
+    const CHECKS: &[(&str, Command, u8, &[u8])] = &[
+        ("serial (shortened)", cmd::SERIAL.get(), cmd::SERIAL_SIZE, &[]),
+        ("firmware (full)", cmd::FIRMWARE_EXT.get(), cmd::FIRMWARE_EXT_SIZE, &[]),
+        ("dpi", cmd::DPI.get(), cmd::DPI_SIZE, &[cmd::NOSTORE]),
+        ("battery", cmd::BATTERY.get(), cmd::POWER_SIZE, &[]),
+        ("paired devices", cmd::WIRELESS_DEVICES.get(), cmd::WIRELESS_DEVICES_SIZE, &[]),
+    ];
+    [0x1F, 0xFF]
+        .into_iter()
+        .map(|txid| {
+            let probes = CHECKS
+                .iter()
+                .map(|&(name, command, size, args)| {
+                    let (status, reply) = match dev.transact_as(txid, command, size, args) {
+                        Ok(r) => {
+                            let bytes = &r.args()[..size as usize];
+                            let value = if command == cmd::SERIAL.get() {
+                                let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+                                std::str::from_utf8(&bytes[..end])
+                                    .ok()
+                                    .filter(|s| s.chars().all(|c| c.is_ascii_graphic()))
+                                    .map(shorten)
+                                    .unwrap_or_else(|| "none".into())
+                            } else {
+                                hex(bytes)
+                            };
+                            ("ok".into(), value)
+                        }
+                        Err(Error::Device { status, .. }) => (format!("{status:?}"), String::new()),
+                        Err(Error::NoReply(_)) => ("no reply".into(), String::new()),
+                        Err(e) => (e.to_string(), String::new()),
+                    };
+                    Probe { name, command: command.to_string(), status, reply }
+                })
+                .collect();
+            TxidDiagnostic { txid: format!("{txid:02X}"), probes }
+        })
+        .collect()
 }
 
 /// Every byte of a short reply: a trailing 00 can be the answer (#34: smart dimming's
@@ -299,6 +361,15 @@ impl std::fmt::Display for Report {
             let leds: Vec<String> = d.leds.iter().map(|l| l.to_string()).collect();
             let leds = if leds.is_empty() { "none".to_string() } else { leds.join(", ") };
             writeln!(f, "  {:<26} 0F:84  {leds}", "lighting zones (LED ids)")?;
+            if !d.txid_diagnostics.is_empty() {
+                writeln!(f, "  HyperSpeed multi-device diagnostics (read-only, exact txid replies):")?;
+                for group in &d.txid_diagnostics {
+                    writeln!(f, "    txid {}:", group.txid)?;
+                    for p in &group.probes {
+                        writeln!(f, "      {:<24} {}  {:<12} {}", p.name, p.command, p.status, p.reply)?;
+                    }
+                }
+            }
             if !d.dock.is_empty() {
                 writeln!(f, "  The dock itself (txid {DOCK_TXID:02X}):")?;
                 for p in &d.dock {
@@ -365,6 +436,14 @@ mod tests {
         report_for(&sim, MOUSE_PID);
         assert!(sim.state().log.iter().all(|c| c.id & 0x80 != 0), "only GET commands");
         assert_eq!(sim.state().dpi, Some((800, 800)));
+    }
+
+    #[test]
+    fn simulated_devices_do_not_run_hyperspeed_diagnostics() {
+        let keyboard = report_for(&Sim::keyboard(), KEYBOARD_PID);
+        assert!(keyboard.txid_diagnostics.is_empty());
+        let mouse = report_for(&Sim::wireless_mouse(), WIRELESS_MOUSE_PID);
+        assert!(mouse.txid_diagnostics.is_empty());
     }
 
     #[test]
