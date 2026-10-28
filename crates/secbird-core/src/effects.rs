@@ -93,9 +93,24 @@ impl Effect {
 }
 
 impl Device {
+    /// Whether this model can run the requested effect. Some mice acknowledge
+    /// unsupported effect writes but display nothing or a static color.
+    pub fn supports_effect(&self, effect: &Effect) -> bool {
+        self.spec.as_ref().is_none_or(|s| {
+            !s.unsupported_effects.iter().any(|kind| kind == effect.kind())
+        })
+    }
+
     /// Run a built-in effect on one lighting zone.
     pub fn set_effect(&self, led: u8, effect: &Effect) -> Result<()> {
         effect.check()?;
+        if !self.supports_effect(effect) {
+            return Err(Error::Unsupported(format!(
+                "{} can't run {} by itself",
+                self.name(),
+                effect.kind()
+            )));
+        }
         if *effect == Effect::Battery {
             let percent = self.battery()?.ok_or_else(|| Error::Unsupported(format!("{} has no battery", self.name())))?;
             return self.set_static_color(led, Effect::battery_color(percent));
