@@ -175,6 +175,18 @@ pub fn build(api: &HidApi, db: &Db) -> Report {
             }
         }
     }
+    // A 02C9 HyperSpeed receiver exposes a keyboard and an optional mouse
+    // behind one HID PID. Use the same strict routing as the editor so the
+    // report never labels the mouse's DPI/firmware as keyboard settings.
+    if interfaces.iter().any(|i| i.pid == "02C9") {
+        devices.retain(|d| d.pid != "02C9" && d.pid != "00EA");
+        devices.extend(
+            crate::device::discover(api, db)
+                .iter()
+                .filter(|d| matches!(d.pid, 0x02C9 | 0x00EA))
+                .map(|d| probe(d, false)),
+        );
+    }
     devices.extend(crate::sim::from_env().iter().map(|d| probe(d, true)));
 
     Report {
