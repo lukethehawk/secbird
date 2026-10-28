@@ -2,7 +2,7 @@ name: Test shared HyperSpeed receiver support
 
 on:
   push:
-    branches: [test-02c9-shared-hyperspeed-receiver]
+    branches: [test-02c9-shared-hyperspeed-receiver, experiment-spectrum-resync-on-wake]
   workflow_dispatch:
 
 jobs:
@@ -23,7 +23,7 @@ jobs:
       - name: Upload test binaries
         uses: actions/upload-artifact@v4
         with:
-          name: secbird-shared-hyperspeed-windows-test
+          name: secbird-wake-spectrum-windows-test
           path: |
             target/release/secbird.exe
             target/release/secbird-tray.exe
