@@ -228,6 +228,10 @@ impl Server {
             ("GET", "/api/settings") => Ok(settings_json(&engine)),
             ("GET", "/api/export") => Store::load(&config_dir().join("profiles.json"))
                 .and_then(|s| serde_json::to_value(&s).map_err(|e| Error::Db(e.to_string()))),
+            ("POST", "/api/resync-spectrum") => {
+                let zones = engine.resync_spectrum(None);
+                Ok(json!({ "zones": zones }))
+            }
             ("POST", path) => post(&mut engine, path, &req.body),
             _ => return Response::text("404 Not Found", "Not found"),
         };
@@ -583,6 +587,7 @@ fn settings_json(engine: &Engine) -> Value {
         "battery_warning_at": s.low_battery(),
         "auto_switch": !s.auto_switch_off,
         "away_lights": s.away_lights.as_deref().unwrap_or(""),
+        "spectrum_wake_sync": s.spectrum_wake_sync,
         "synapse": engine.synapse(),
     })
 }
@@ -611,6 +616,7 @@ fn app_post(engine: &mut Engine, path: &str, b: &Body) -> Option<Result<Value, E
                     s.battery_warning_at = Some(b.value);
                 }
                 "auto_switch" => s.auto_switch_off = !b.on,
+                "spectrum_wake_sync" => s.spectrum_wake_sync = b.on,
                 // `data`: "dim", "off", or "" to leave the lights as they are.
                 "away_lights" => {
                     let want = b.data.as_str().unwrap_or_default();
