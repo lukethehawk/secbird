@@ -1,0 +1,28 @@
+name: Build guarded 02C9 unpair recovery tool
+
+on:
+  push:
+    branches: [tool-unpair-00ea-from-02c9]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Lint recovery utility
+        run: cargo clippy --release -p secbird --bin secbird-unpair-shared-mouse -- -D warnings
+      - name: Run recovery utility unit tests
+        run: cargo test --release -p secbird --bin secbird-unpair-shared-mouse
+      - name: Compile standalone utility
+        run: cargo build --release -p secbird --bin secbird-unpair-shared-mouse
+      - name: Upload portable utility
+        uses: actions/upload-artifact@v4
+        with:
+          name: guarded-02c9-unpair-00ea
+          path: target/release/secbird-unpair-shared-mouse.exe
+          retention-days: 7
