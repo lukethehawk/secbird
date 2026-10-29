@@ -23,6 +23,7 @@
 | Spectrum Cycling sincronizzazione automatica: **entrambi vanno in standby, poi uno viene riattivato e dopo l'altro** | **NON FUNZIONA**: il caso è riproducibile secondo il feedback. Deve funzionare **indipendentemente da quale si sveglia prima**. È il bug prioritario. |
 | PR di correzione RGB verso upstream | Branch pronto, **PR non ancora aperta** al controllo del 29/10; creazione automatica via integrazione GitHub fallita con HTTP 403. |
 | Correzione doppio standby, branch `experiment-spectrum-wake-double-standby` | Causa principale **confermata dal log reale** (§4.1). Nuova macchina a stati + rescan mirato + retry limitati + log diagnostici. CI Windows: vedi §6. **NON ancora verificata su hardware: non dichiararla risolta.** |
+| ↳ Prima prova hardware della correzione (29/10/2026, 08:52–09:02 UTC) | **POSITIVA.** Utente: «mi pare si syncano sempre in ogni caso ora». Il log conferma la sync su entrambi i LED nei casi "entrambi in standby → tastiera poi mouse", "→ mouse poi tastiera" e nel caso esatto del bug (tastiera tolta dalla lista mentre dormiva). Dettagli e scenari non ancora coperti in §4.1. La riga "NON FUNZIONA" sopra resta valida per il **vecchio** prototipo. |
 
 **Precisazione critica ricevuta durante l'handoff (29/10/2026):**
 > «Errata corrige, non ha funzionato quando entrambi i device sono andati in stand by e ne ho riattivato uno alla volta, se invece ne va solo uno e lo riattivo, si syncano correttamente».
@@ -243,6 +244,41 @@ Quindi il caso "entrambi dormono" fallisce quando un rescan cade mentre un dispo
 
 Entrambi in standby → mouse poi tastiera e tastiera poi mouse, a **10 s** e **90 s** (primo device in uso); entrambi gli ordini con il primo device **tornato in standby** prima del secondo wake; un solo device in standby (mouse; tastiera) come regressione del caso funzionante; **tastiera tolta dalla lista mentre dormiva** (il caso del log); 2 retry poi attesa; nuovo wake che azzera i retry; input continuo per 10 min senza nuove scritture; profilo rimandato; device cablato; timer di standby dal profilo; PID sconosciuti; device senza Spectrum; riga di log; parsing dei percorsi Raw Input.
 
+#### Prima prova hardware della correzione (29/10/2026)
+
+Build della run 40844505774, avviata da cartella nuova; log vecchio rinominato in `secbird-prima.log`. Impostazioni invariate: Spectrum su entrambi, standby 1 min su entrambi, `away_lights: "off"`, nessun `spectrum_wake_settle_ms` (quindi 1,5 s). Feedback utente: **«mi pare si syncano sempre in ogni caso ora»**. Log (UTC, ora locale = UTC+1):
+
+```text
+08:52:40 tray started; Raw Input: 4 collezioni per ricevitore (00EA e 02C9: MI_00, MI_01 COL01, MI_01 COL02, MI_02)
+08:52:42 attempt 1: nothing written, waiting for 02C9 to wake          <- primo input del mouse all'avvio
+08:53:46 gone: BlackWidow V4 Low-Profile HyperSpeed (asleep or unplugged)   <- il bug originale si ripresenta (retry +45 s)
+08:53:54 attempt 1: nothing written, no other device shows Spectrum    <- mouse sveglio, tastiera fuori lista: niente comandi
+08:55:00 02C9 woke (first input seen); 00EA quiet 1 s
+08:55:01 02C9 isn't in the device list (dropped while asleep?): rescanning
+08:55:02 found: BlackWidow ...; attempt 1 on 02C9, 00EA: 02C9 backlight ok (23 ms), 00EA underglow ok (18 ms)   <- CASO DEL BUG: RISOLTO
+08:57:52 02C9 woke (after 171 s quiet); 00EA quiet 160 s, may be asleep -> waiting for 00EA
+08:58:10 00EA woke (after 179 s quiet) -> attempt 1 on 00EA, 02C9: ok, ok     <- entrambi in standby, TASTIERA poi MOUSE (18 s)
+08:59:10 02C9 woke; locked: lights to 0% -> nothing written, lights are down while away   <- Win+L
+08:59:18 back: lights as saved                                         <- lights_back: profili a entrambi insieme
+09:00:25 00EA woke (after 92 s quiet); 02C9 quiet 66 s, may be asleep -> waiting for 02C9
+09:01:36 02C9 woke (after 137 s quiet); 00EA quiet 0 s -> attempt 1 on 02C9, 00EA: ok, ok   <- entrambi in standby, MOUSE poi TASTIERA (71 s, mouse in uso)
+```
+
+**Fatti nuovi emersi dal log:**
+- Il rescan di avvio a +45 s ha di nuovo tolto la tastiera addormentata: il meccanismo della causa è **riprodotto** e ora viene **gestito** (rescan mirato al risveglio, poi scrittura su entrambi).
+- Nessuna riga `raw input device … removed` durante gli standby: con dongle separati lo standby **non ri-enumera** le collezioni HID, quindi gli handle Raw Input restano stabili.
+- Nessun `trying again`: entrambi accettano la SET 1,5 s dopo il risveglio (18–39 ms per scrittura). L'ipotesi "firmware tastiera lento" non è emersa in queste prove; `spectrum_wake_settle_ms` non è servito.
+- Con Win+L breve (8 s) la sync viene giustamente saltata ("away"); al ritorno `lights_back` riavvia entrambi insieme.
+- Al rescan delle 08:53:46 il mouse era fermo da ~53 s (non ancora in standby): l'ipotesi sul dongle Basilisk che risponde mentre il mouse dorme **resta aperta**.
+
+**Non ancora coperto esplicitamente dal log** (il feedback dice "in ogni caso", ma restano da verificare in modo mirato):
+- Il primo dispositivo che torna in standby prima che si svegli il secondo (scenario 5).
+- La regressione con un solo dispositivo in standby e l'altro in uso: mouse da solo, tastiera da sola senza Win+L.
+- Blocco lungo o schermo spento con `away_lights: "off"` mentre entrambi dormono: è il percorso `retry_lights_back` → sync.
+- Sospensione e ripresa del PC; uso reale per ore.
+
+**Messaggio da migliorare (cosmetico):** con la tastiera fuori lista il log dice `no other device shows Spectrum`. Più preciso sarebbe "the other device is not in the list (asleep?)": il planner vede solo i dispositivi presenti.
+
 #### Limiti noti
 
 - Ricevitore Multi-Device condiviso (mouse su 02C9): Raw Input attribuisce anche l'input del mouse al PID 02C9. Non gestito: configurazione attualmente non usata.
@@ -288,6 +324,7 @@ Entrambi in standby → mouse poi tastiera e tastiera poi mouse, a **10 s** e **
 
 1. **Priorità immediata:** sistemare il bug Spectrum con **entrambi i dispositivi addormentati**, preservando l'esito funzionante con un solo device dormiente. Iniziare da una diagnosi con logging e una macchina a stati corretta, non da sleep timer o ripair.
    - **Stato al 29/10 (seconda sessione):** correzione in `experiment-spectrum-wake-double-standby` (§4.1), in attesa del test hardware dell'utente. Prossimo passo: far provare i 5 scenari, farsi dare **`secbird.log`** e confrontare le righe `Spectrum wake:` con quello che l'utente ha visto. Se resta sfasamento con `… ok` su entrambi i LED, provare `spectrum_wake_settle_ms` 3000 (ipotesi firmware tastiera).
+   - **Aggiornamento 29/10, dopo la prima prova:** esito **positivo** su hardware (§4.1, "Prima prova hardware"). Restano da coprire: primo device tornato in standby, regressione con un solo device in standby, blocco lungo/schermo spento con `away_lights: "off"`, sospensione del PC e uso prolungato. Solo dopo valutare una PR upstream; andrà ricostruita su upstream `main` **senza** il codice del ricevitore condiviso e separata dalla PR RGB.
 2. Tenere separato il branch `experiment-spectrum-resync-on-wake` dalla PR RGB. Il codice non ancora verificato non deve finire nella patch upstream.
 3. Gestire la PR RGB isolata appena opportuno con il pulsante GitHub “Create pull request” al link indicato. È indipendente dalla sincronizzazione.
 4. Dopo Spectrum verificare ancora button remapping e profili DPI, stabilità wireless duratura, eventuale allineamento RGB al risveglio di tastiera sola, e comportamenti in caso di lock/wake del PC.
