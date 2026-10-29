@@ -277,6 +277,27 @@ Build della run 40844505774, avviata da cartella nuova; log vecchio rinominato i
 - Blocco lungo o schermo spento con `away_lights: "off"` mentre entrambi dormono: è il percorso `retry_lights_back` → sync.
 - Sospensione e ripresa del PC; uso reale per ore.
 
+#### Seconda prova: schermo spento da Windows e Win+L (29/10/2026, 09:10–09:13 UTC)
+
+Condizioni: timeout schermo di Windows a 1 minuto; il pulsante del monitor **non** va bene, perché Windows non lo vede. **Alle 09:09 UTC l'utente ha cambiato dall'editor i timer di standby: mouse 6 min, tastiera 7 min** (prima 1 min entrambi). Feedback: «2 volte in standby lo schermo, la prima volta ok, la seconda il mouse non ha spento il led. con win+l tutto ok, i led si accendono dopo aver inserito la password».
+
+```text
+09:10:47 screen off: lights to 0%
+09:10:59 00EA woke (after 72 s quiet); 02C9 quiet 99 s, may be asleep   <- timer ancora da 1 min: peer non aggiornati
+09:10:59 back: lights as saved
+09:11:01 attempt 1: nothing written, waiting for 02C9 to wake
+09:12:05 screen off: lights to 0%          <- utente: qui il LED del mouse NON si è spento
+09:13:08 back: lights as saved
+09:13:16 locked: lights to 0%              <- Win+L: ok
+09:13:25 back: lights as saved             <- LED riaccesi dopo la password: ok
+```
+
+Analisi:
+- **La sync Spectrum si è comportata correttamente**: dopo le 09:11 nessun wake, perché con timer da 6–7 minuti pause di 2–4 minuti non sono standby; nessun comando inutile. Nessuna scrittura mentre si era "away".
+- **Il percorso `retry_lights_back` → sync resta NON provato.** Con timer lunghi i dispositivi non dormivano, quindi entrambi hanno risposto a `lights_back` insieme. Per provarlo serve uno schermo spento più lungo del timer di standby.
+- **LED del mouse acceso al secondo "screen off": problema della funzione "Lights when away" originale (#48/#52), NON della sync.** `Engine::lights_away` è identico a upstream e scarta gli errori: GET brightness poi SET live, nessun log per dispositivo, **nessun retry** (solo `lights_back` ce l'ha, `relight`). Se il mouse perde quel comando resta acceso per tutto il tempo "away". La causa del mancato comando non si vede dal log. Ipotesi: dongle occupato o mouse in transizione. Proposta: loggare l'esito per dispositivo di away/back ed eventualmente aggiungere per "away" un retry come quello di "back".
+- **Peer non aggiornati (difetto minore della correzione):** i timer di standby vengono riletti solo dopo un rescan o un tentativo di sync, non quando l'editor salva. Alle 09:10:59 la tastiera è stata giudicata "may be asleep" con il vecchio timer da 1 min. Effetto innocuo in questo caso (nessuna scrittura; `lights_back` ha riallineato), ma il planner potrebbe saltare un dispositivo sveglio. Correzione semplice: rileggere i peer **all'inizio** di `spectrum_due` invece che alla fine.
+
 **Messaggio da migliorare (cosmetico):** con la tastiera fuori lista il log dice `no other device shows Spectrum`. Più preciso sarebbe "the other device is not in the list (asleep?)": il planner vede solo i dispositivi presenti.
 
 #### Limiti noti
