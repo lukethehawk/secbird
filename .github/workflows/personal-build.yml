@@ -1,0 +1,46 @@
+# Personal build (this fork only, not for upstream): upstream main plus the open PRs,
+# checked like ci.yml and packaged like release.yml, with an unsigned installer.
+name: Personal build
+
+on:
+  push:
+    branches: [personal-build]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: 0.5.0-personal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo clippy --release --all-targets -- -D warnings
+      - run: cargo test --release
+      - run: cargo build --release
+
+      - name: Installer
+        run: |
+          choco install innosetup --no-progress -y
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" //Qp "//DAppVersion=$VERSION" installer/secbird.iss
+
+      - name: Portable folder
+        run: |
+          mkdir -p dist/Secretarybird
+          cp target/release/secbird-tray.exe target/release/secbird.exe README.md LICENSE-MIT LICENSE-APACHE dist/Secretarybird/
+          cp NOTICE dist/Secretarybird/NOTICE.txt
+          cp "target/installer/Secretarybird-Setup-$VERSION.exe" dist/
+          (cd dist && sha256sum Secretarybird-Setup-$VERSION.exe Secretarybird/*.exe | tee SHA256SUMS.txt)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: secbird-personal-build-windows
+          path: dist/
+          retention-days: 30
