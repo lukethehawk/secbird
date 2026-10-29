@@ -298,7 +298,17 @@ Analisi:
 - **LED del mouse acceso al secondo "screen off": problema della funzione "Lights when away" originale (#48/#52), NON della sync.** `Engine::lights_away` è identico a upstream e scarta gli errori: GET brightness poi SET live, nessun log per dispositivo, **nessun retry** (solo `lights_back` ce l'ha, `relight`). Se il mouse perde quel comando resta acceso per tutto il tempo "away". La causa del mancato comando non si vede dal log. Ipotesi: dongle occupato o mouse in transizione. Proposta: loggare l'esito per dispositivo di away/back ed eventualmente aggiungere per "away" un retry come quello di "back".
 - **Peer non aggiornati (difetto minore della correzione):** i timer di standby vengono riletti solo dopo un rescan o un tentativo di sync, non quando l'editor salva. Alle 09:10:59 la tastiera è stata giudicata "may be asleep" con il vecchio timer da 1 min. Effetto innocuo in questo caso (nessuna scrittura; `lights_back` ha riallineato), ma il planner potrebbe saltare un dispositivo sveglio. Correzione semplice: rileggere i peer **all'inizio** di `spectrum_due` invece che alla fine.
 
-**Messaggio da migliorare (cosmetico):** con la tastiera fuori lista il log dice `no other device shows Spectrum`. Più preciso sarebbe "the other device is not in the list (asleep?)": il planner vede solo i dispositivi presenti.
+#### Modifica successiva: retry per le luci away, log per dispositivo, timer freschi (commit `3b4c522`)
+
+Richiesta esplicita dell'utente dopo la seconda prova.
+- `Engine::lights_away` restituisce i device che hanno perso il comando. `retry_lights_away` li riprova sul battito esistente di 3 s (`TIMER_LIGHTS`) per **30 s** (`DIM_FOR`), solo mentre si è "away". È simmetrico a `retry_lights_back` (2 min, `RELIGHT_FOR`), che esisteva già. Costo massimo: ~10 GET+SET verso un device che non risponde, poi basta.
+- Log: `screen off: lights to 0%; not answering: <nome>, trying again for 30 s`; `back: lights as saved; not answering: …, trying again for 120 s`; `lights away|back: <nome> answered on a retry` / `gave up on <nome> (not answering)`. Nessun seriale.
+- I retry non contano più come "fatto" un device assente dalla lista (prima veniva tolto da `relight` senza scrivere nulla).
+- `spectrum_due` rilegge i timer di standby (peer) **all'inizio** del tentativo: un timer cambiato dall'editor vale subito.
+- Il messaggio "no other device shows Spectrum" ora aggiunge i peer fuori lista: `…; 02C9 not in the device list (asleep?)`.
+- Nuovi test: timer cambiati dall'editor (caso del 29/10), nuovo messaggio, scadenza dei retry (`engine.rs`).
+
+**Messaggio da migliorare (cosmetico, risolto in `3b4c522`):** con la tastiera fuori lista il log dice `no other device shows Spectrum`. Più preciso sarebbe "the other device is not in the list (asleep?)": il planner vede solo i dispositivi presenti.
 
 #### Limiti noti
 
@@ -336,6 +346,7 @@ Analisi:
 - Primo Spectrum wake prototype (solo mouse): https://github.com/lukethehawk/secbird/actions/runs/40767796461 — successful.
 - Prototipo bidirezionale più recente: https://github.com/lukethehawk/secbird/actions/runs/40771276269 — **Clippy, Rust tests, Windows release build SUCCESSFUL**, artifact `secbird-wake-spectrum-windows-test`, **ma bug double-standby in hardware reale**.
 - **Correzione doppio standby** (`experiment-spectrum-wake-double-standby`, commit `5171084`): https://github.com/lukethehawk/secbird/actions/runs/40844505774 — **Clippy `-D warnings`, test Rust (core 103 ok/5 ignored; tray 20 ok, di cui 19 nuovi in `wake_sync`), build release: SUCCESSFUL** (29/10/2026). Artifact `secbird-experiment-spectrum-wake-double-standby-windows` (scade il 12/11/2026). Il messaggio di commit dice "21 tests": il numero corretto è 19. **Verifica hardware ancora da fare.**
+- **Retry luci away + timer freschi** (commit `3b4c522`): https://github.com/lukethehawk/secbird/actions/runs/40848946895 — Clippy, test (core 103 ok/5 ignored; tray **22 ok**), build release: **SUCCESSFUL**. Artifact `secbird-experiment-spectrum-wake-double-standby-windows` (scade il 12/11/2026). Da provare su hardware.
 - GitHub Actions artifacts possono scadere; si possono ricompilare i branch.
 - Installazione build: uscire **completamente** dall'istanza tray precedente. Single-instance mutex `Local\\Secretarybird.Tray`: se già attiva, lanciare altro EXE potrebbe aprire l'editor della **vecchia istanza** e falsare il test.
 - PowerShell nella cartella dei binari: `.\\secbird-tray.exe --editor`. Non usare solo il nome senza `.\\`. Log: `%APPDATA%\\Secretarybird\\secbird.log`; profili/settings: `profiles.json`, `tray.json` nella cartella Secretarybird di AppData.
