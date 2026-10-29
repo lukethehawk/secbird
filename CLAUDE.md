@@ -101,7 +101,7 @@ Interpretazione corretta: **il trigger di wake e il riavvio Spectrum funzionano 
 - **Non contiene** alcuna parte della gestione sperimentale dongle condiviso o sync automatico.
 - PR upstream **non ancora aperta al 29/10/2026**: il connettore GitHub non ha permesso POST cross-repo (HTTP 403 Resource not accessible by integration).
   Aprire manualmente su https://github.com/infinityInfinite/secbird/compare/main...lukethehawk:fix-basilisk-v4-hyperspeed-rgb?expand=1
-- Build/test patch RGB: https://github.com/lukethehawk/secbird/actions/runs/40760671241, **success**.
+- Build/test patch RGB: https://github.com/lukethehawk/secbird/actions/runs/40760671241, **success**. *(Correzione 29/10: quella run è sul branch `test-02c9-shared-hyperspeed-receiver` (`f465802`), non sul branch isolato `8819d13`. Il branch isolato è passato in CI per la prima volta con la run 40859801048, vedi §6.)*
 
 ### 3.5 Standby Basilisk
 
@@ -274,7 +274,7 @@ Build della run 40844505774, avviata da cartella nuova; log vecchio rinominato i
 
 **Non ancora coperto esplicitamente dal log** (il feedback dice "in ogni caso", ma restano da verificare in modo mirato):
 - Il primo dispositivo che torna in standby prima che si svegli il secondo (scenario 5).
-- La regressione con un solo dispositivo in standby e l'altro in uso: mouse da solo, tastiera da sola senza Win+L.
+- La regressione con un solo dispositivo in standby e l'altro in uso: mouse da solo, tastiera da sola senza Win+L. *(Rilettura del log, 29/10: la tastiera da sola, col mouse in uso, è coperta alle 09:03:39 e 09:06:02 UTC, con `ok` su entrambi. Resta da provare il mouse da solo.)*
 - Blocco lungo o schermo spento con `away_lights: "off"` mentre entrambi dormono: è il percorso `retry_lights_back` → sync. *(Percorso coperto nella terza prova, 10:32 UTC.)*
 - Sospensione e ripresa del PC; uso reale per ore.
 
@@ -367,6 +367,9 @@ Analisi:
 | `add-blackwidow-v4-low-profile-wired-02cc` | `b019fc9da2e713aec0204f25b0636ecb3df09917` | PR #31 già merged. |
 | `fix-dpi-on-non-mouse-devices` | `2e4bc68955631c839c152179a87c9baccc8aea66` | PR #32 già merged. |
 | `experiment-spectrum-wake-double-standby` | `5171084`, poi `3b4c522` (+ commit di questo documento) | **Correzione doppio standby (§4.1)**, basata su `experiment-spectrum-resync-on-wake`. Sperimentale. Tre prove hardware positive il 29/10; non ancora provati la sospensione del PC e l'uso prolungato. Non è in `main`. |
+| `lights-away-retry` | `3bd594c` | **Per PR upstream.** Base: upstream `main` `5c6c379`. Solo il retry "Lights when away" + log per dispositivo (`engine.rs`, `win.rs`). |
+| `spectrum-wake-sync` | `2701d93` | **Per PR upstream.** Base: `lights-away-retry`. Solo la sync Spectrum: niente ricevitore condiviso, niente RGB, niente `CLAUDE.md`/workflow del fork, niente `spectrum_wake_settle_ms`. Per il resto è identico al codice provato su hardware. |
+| `ci/lights-away-retry`, `ci/spectrum-wake-sync`, `ci/fix-basilisk-v4-hyperspeed-rgb` | +1 commit `[ci-only]` | Copia del branch + `ci-branch-check.yml` (la `ci.yml` di upstream su push `ci/**`). Servono solo per la CI sul fork: **non usarli come base delle PR**. |
 
 **Tutti questi branch esistono già nel fork remoto**. Non occorre accorparli in `main` per “salvarli”: farlo mescolerebbe codice sperimentale a patch validate. Il presente `CLAUDE.md` è copiato su `main` e su `experiment-spectrum-resync-on-wake`. Dopo il salvataggio, gli HEAD di questi due branch saranno nuovi rispetto alla tabella; ricontrollarli con `git fetch --all`.
 
@@ -374,7 +377,11 @@ Analisi:
 
 - Shared receiver CI: https://github.com/lukethehawk/secbird/actions/runs/40741074248
 - Utility unpair: https://github.com/lukethehawk/secbird/actions/runs/40756754825 — artifact `guarded-02c9-unpair-00ea`.
-- RGB patch test: https://github.com/lukethehawk/secbird/actions/runs/40760671241 — successful.
+- RGB patch test: https://github.com/lukethehawk/secbird/actions/runs/40760671241 — successful (sul branch `test-02c9-shared-hyperspeed-receiver`, non sul branch isolato).
+- **Branch per le PR upstream** (29/10/2026, workflow `ci.yml` di upstream: Windows clippy+test, Linux core+CLI):
+  - `lights-away-retry`: https://github.com/lukethehawk/secbird/actions/runs/40859512653 — **success** (tray 2 test).
+  - `spectrum-wake-sync`: https://github.com/lukethehawk/secbird/actions/runs/40859512622 — **success** (core 100 ok/5 ignored; tray 22).
+  - `fix-basilisk-v4-hyperspeed-rgb` (`8819d13`): https://github.com/lukethehawk/secbird/actions/runs/40859801048 — **success** (Windows: core 102 ok/5 ignored, inclusi i 2 test nuovi).
 - Primo Spectrum wake prototype (solo mouse): https://github.com/lukethehawk/secbird/actions/runs/40767796461 — successful.
 - Prototipo bidirezionale più recente: https://github.com/lukethehawk/secbird/actions/runs/40771276269 — **Clippy, Rust tests, Windows release build SUCCESSFUL**, artifact `secbird-wake-spectrum-windows-test`, **ma bug double-standby in hardware reale**.
 - **Correzione doppio standby** (`experiment-spectrum-wake-double-standby`, commit `5171084`): https://github.com/lukethehawk/secbird/actions/runs/40844505774 — **Clippy `-D warnings`, test Rust (core 103 ok/5 ignored; tray 20 ok, di cui 19 nuovi in `wake_sync`), build release: SUCCESSFUL** (29/10/2026). Artifact `secbird-experiment-spectrum-wake-double-standby-windows` (scade il 12/11/2026). Il messaggio di commit dice "21 tests": il numero corretto è 19. **Verifica hardware ancora da fare.**
@@ -390,6 +397,11 @@ Analisi:
    - **Stato al 29/10 (seconda sessione):** correzione in `experiment-spectrum-wake-double-standby` (§4.1), in attesa del test hardware dell'utente. Prossimo passo: far provare i 5 scenari, farsi dare **`secbird.log`** e confrontare le righe `Spectrum wake:` con quello che l'utente ha visto. Se resta sfasamento con `… ok` su entrambi i LED, provare `spectrum_wake_settle_ms` 3000 (ipotesi firmware tastiera).
    - **Aggiornamento 29/10, dopo la prima prova:** esito **positivo** su hardware (§4.1, "Prima prova hardware"). Restano da coprire: primo device tornato in standby, regressione con un solo device in standby, blocco lungo/schermo spento con `away_lights: "off"`, sospensione del PC e uso prolungato. Solo dopo valutare una PR upstream; andrà ricostruita su upstream `main` **senza** il codice del ricevitore condiviso e separata dalla PR RGB.
    - **Aggiornamento 29/10, dopo la terza prova (build `3b4c522`):** positiva. Il retry dello spegnimento funziona e il percorso riaccensione → sync è stato provato. Restano: sospensione e ripresa del PC, uso prolungato, scenario 5, un solo device in standby senza Win+L, e la tastiera che allo "screen off" delle 10:32 UTC non ha risposto per 30 s (causa ignota). Nessun merge su `main` senza la richiesta esplicita dell'utente.
+   - **29/10, PR upstream preparate su richiesta dell'utente** («possiamo proporre una PR sul repo originale con le nostre modifiche»). Sono tre PR separate verso `infinityInfinite/secbird`:
+     1. `lights-away-retry`;
+     2. `spectrum-wake-sync`, che contiene anche il commit della 1 e si riduce a un commit dopo il suo merge;
+     3. `fix-basilisk-v4-hyperspeed-rgb`. Il template PR di upstream chiede un device report per le modifiche a `devices.json`.
+     Il codice del ricevitore condiviso resta fuori. Le bozze delle descrizioni sono in `pr-drafts/` nella cartella locale (esclusa da git con `.git/info/exclude`). Le PR si aprono solo dopo l'ok esplicito dell'utente.
 2. Tenere separato il branch `experiment-spectrum-resync-on-wake` dalla PR RGB. Il codice non ancora verificato non deve finire nella patch upstream.
 3. Gestire la PR RGB isolata appena opportuno con il pulsante GitHub “Create pull request” al link indicato. È indipendente dalla sincronizzazione.
 4. Dopo Spectrum verificare ancora button remapping e profili DPI, stabilità wireless duratura, eventuale allineamento RGB al risveglio di tastiera sola, e comportamenti in caso di lock/wake del PC.
