@@ -39,8 +39,16 @@ jobs:
           cp "target/installer/Secretarybird-Setup-$VERSION.exe" dist/
           (cd dist && sha256sum Secretarybird-Setup-$VERSION.exe Secretarybird/*.exe | tee SHA256SUMS.txt)
 
+      # Two downloads: the installer, and the portable folder to unzip anywhere.
       - uses: actions/upload-artifact@v4
         with:
-          name: secbird-personal-build-windows
-          path: dist/
+          name: Secretarybird-Setup-0.5.0-personal
+          path: |
+            dist/Secretarybird-Setup-*.exe
+            dist/SHA256SUMS.txt
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Secretarybird-0.5.0-personal-portable
+          path: dist/Secretarybird/
           retention-days: 30
