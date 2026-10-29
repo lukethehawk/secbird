@@ -161,10 +161,19 @@ impl WakeSync {
                 asleep.push(pid);
             }
         }
-        match (order.len(), asleep.is_empty()) {
-            (2.., _) => Plan::Write { order, strict },
-            (_, true) => Plan::Wait("no other device shows Spectrum".into()),
-            (_, false) => Plan::Wait(format!("waiting for {} to wake", list(&asleep))),
+        if order.len() >= 2 {
+            return Plan::Write { order, strict };
+        }
+        if !asleep.is_empty() {
+            return Plan::Wait(format!("waiting for {} to wake", list(&asleep)));
+        }
+        // A device dropped from the list while asleep can't be seen on Spectrum yet.
+        let mut absent: Vec<u16> = self.peers.keys().copied().filter(|pid| !present.contains(pid)).collect();
+        absent.sort_unstable();
+        if absent.is_empty() {
+            Plan::Wait("no other device shows Spectrum".into())
+        } else {
+            Plan::Wait(format!("no other device shows Spectrum; {} not in the device list (asleep?)", list(&absent)))
         }
     }
 
@@ -367,7 +376,8 @@ mod tests {
         let mut t = in_step(t0);
         let mouse_only = [BASILISK];
         assert!(t.input(BASILISK, t0 + secs(300)).is_some());
-        assert_eq!(fire(&mut t, t0 + secs(302), &mouse_only), Plan::Wait("no other device shows Spectrum".into()));
+        let waiting = Plan::Wait("no other device shows Spectrum; 02C9 not in the device list (asleep?)".into());
+        assert_eq!(fire(&mut t, t0 + secs(302), &mouse_only), waiting);
         let woke = t0 + secs(312);
         assert!(t.input(BLACKWIDOW, woke).is_some());
         let job = t.start().unwrap();
@@ -376,6 +386,21 @@ mod tests {
         // After the rescan the tray finds it again.
         assert_eq!(t.plan(&job, &BOTH, &BOTH, now), write([BLACKWIDOW, BASILISK]));
         assert_eq!(t.finish(Outcome::Done), None);
+    }
+
+    /// Seen on 2026-10-29: the timers went from 1 to 7 minutes in the editor; the attempt
+    /// reads them again, so a keyboard quiet for 99 s counts as awake.
+    #[test]
+    fn sleep_timers_changed_in_the_editor_count_at_the_next_attempt() {
+        let t0 = Instant::now();
+        let mut t = in_step(t0);
+        assert!(t.input(BASILISK, t0 + secs(99)).is_some());
+        let job = t.start().unwrap();
+        let now = t0 + secs(100);
+        assert_eq!(t.plan(&job, &BOTH, &BOTH, now), Plan::Wait("waiting for 02C9 to wake".into()));
+        let seven = Peer { wireless: true, sleep: Some(secs(7 * 60)) };
+        t.set_peers(HashMap::from([(BLACKWIDOW, seven), (BASILISK, ONE_MINUTE)]));
+        assert_eq!(t.plan(&job, &BOTH, &BOTH, now), write([BASILISK, BLACKWIDOW]));
     }
 
     #[test]

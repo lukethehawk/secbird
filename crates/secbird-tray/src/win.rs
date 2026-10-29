@@ -1,4 +1,4 @@
-use crate::engine::{describe_writes, ApplyReport, Battery, Engine};
+use crate::engine::{describe_writes, ApplyReport, Battery, Engine, LightsRetry, DIM_FOR, RELIGHT_FOR};
 use crate::wake_sync::{self, Job, Outcome, Plan, WakeSync};
 use secbird_core::log;
 use std::collections::{HashMap, HashSet};
@@ -496,9 +496,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let relit = {
                     let mut engine = app.engine();
                     let relit = engine.retry_lights_back();
+                    let dimmed = engine.retry_lights_away();
+                    log_retry(&engine, "back", &relit);
+                    log_retry(&engine, "away", &dimmed);
                     engine.refresh_frames();
                     engine.keep_laptops_lit();
-                    relit
+                    relit.done
                 };
                 app.spectrum_applied(&relit);
             });
@@ -555,6 +558,24 @@ unsafe fn register_wake_raw_input(hwnd: HWND) -> bool {
     }
     log::append("Spectrum wake: background Raw Input enabled for mouse and keyboard");
     true
+}
+
+/// Log what a retry of the lights while away (or back) did, if anything.
+fn log_retry(engine: &Engine, what: &str, retry: &LightsRetry) {
+    if !retry.done.is_empty() {
+        log::append(&format!("lights {what}: {} answered on a retry", engine.names(&retry.done)));
+    }
+    if !retry.gave_up.is_empty() {
+        log::append(&format!("lights {what}: gave up on {} (not answering)", engine.names(&retry.gave_up)));
+    }
+}
+
+/// `; not answering: <names>, trying again for <n> s` for devices that missed a lights write.
+fn missed_note(engine: &Engine, missed: &[String], window: Duration) -> String {
+    if missed.is_empty() {
+        return String::new();
+    }
+    format!("; not answering: {}, trying again for {} s", engine.names(missed), window.as_secs())
 }
 
 /// The device path of a Raw Input device, such as `\\?\HID#VID_1532&PID_02C9&MI_02#...`.
@@ -656,14 +677,15 @@ impl App {
         let mut engine = self.engine();
         match percent {
             Some(percent) if !engine.is_away() => {
-                log::append(&format!("{}: lights to {percent}%", if locked { "locked" } else { "screen off" }));
-                engine.lights_away(percent);
+                let missed = engine.lights_away(percent);
+                let why = if locked { "locked" } else { "screen off" };
+                log::append(&format!("{why}: lights to {percent}%{}", missed_note(&engine, &missed, DIM_FOR)));
             }
             None if engine.is_away() => {
-                log::append("back: lights as saved");
                 // Every device that answers gets its profile at once, so their Spectrum
                 // restarts together; one that misses it is synced when it answers later.
-                engine.lights_back();
+                let missed = engine.lights_back();
+                log::append(&format!("back: lights as saved{}", missed_note(&engine, &missed, RELIGHT_FOR)));
             }
             _ => {}
         }
@@ -806,6 +828,9 @@ impl App {
     /// The Spectrum timer fired: one attempt (see [`wake_sync`]).
     fn spectrum_due(&mut self) {
         let Some(mut job) = self.wake_sync.start() else { return };
+        // Sleep timers may have changed in the editor since the last rescan.
+        let peers = self.engine().wake_peers();
+        self.wake_sync.set_peers(peers);
         // A retry after a write that didn't take: reopen the handles first, in case the
         // receiver came back as a new device.
         let rescanned = job.attempt > 1;
@@ -860,9 +885,6 @@ impl App {
             None if outcome == Outcome::NotReady => log::append("Spectrum wake: giving up until the next wake"),
             None => {}
         }
-        // Profiles may have changed since the last rescan (a sleep timer set in the editor).
-        let peers = self.engine().wake_peers();
-        self.wake_sync.set_peers(peers);
     }
 
     /// What to write for `job`, from the devices the tray has now.
