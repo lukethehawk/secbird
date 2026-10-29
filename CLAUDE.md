@@ -1,5 +1,5 @@
 # CLAUDE.md — Secretarybird / Razer HyperSpeed: memoria tecnica e handoff
-**Aggiornato: 29 ottobre 2026.** Lingua preferita per interazione con l'utente: **italiano**.
+**Aggiornato: 29 ottobre 2026** (seconda sessione: diagnosi del doppio standby dal log reale e correzione nel branch `experiment-spectrum-wake-double-standby`, vedi **§4.1**). Lingua preferita per interazione con l'utente: **italiano**.
 
 - Fork dell'utente: https://github.com/lukethehawk/secbird
 - Progetto originale: https://github.com/infinityInfinite/secbird
@@ -22,6 +22,7 @@
 | Spectrum Cycling sincronizzazione automatica: **un solo dispositivo va in standby, poi si risveglia** | **FUNZIONA: dopo il risveglio i due colori si riallineano.** Ultima correzione esplicita dell'utente, 29/10/2026. |
 | Spectrum Cycling sincronizzazione automatica: **entrambi vanno in standby, poi uno viene riattivato e dopo l'altro** | **NON FUNZIONA**: il caso è riproducibile secondo il feedback. Deve funzionare **indipendentemente da quale si sveglia prima**. È il bug prioritario. |
 | PR di correzione RGB verso upstream | Branch pronto, **PR non ancora aperta** al controllo del 29/10; creazione automatica via integrazione GitHub fallita con HTTP 403. |
+| Correzione doppio standby, branch `experiment-spectrum-wake-double-standby` | Causa principale **confermata dal log reale** (§4.1). Nuova macchina a stati + rescan mirato + retry limitati + log diagnostici. CI Windows: vedi §6. **NON ancora verificata su hardware: non dichiararla risolta.** |
 
 **Precisazione critica ricevuta durante l'handoff (29/10/2026):**
 > «Errata corrige, non ha funzionato quando entrambi i device sono andati in stand by e ne ho riattivato uno alla volta, se invece ne va solo uno e lo riattivo, si syncano correttamente».
@@ -170,6 +171,87 @@ L'utente vuole che i due dispositivi con Spectrum Cycling ritornino in fase dopo
 - Niente modifica al pairing dei dongle e niente cambio ai device RGB reali.
 - Non integrare upstream una feature non verificata sul PC reale.
 
+### 4.1 Seconda sessione (29/10/2026): diagnosi dal log reale e correzione
+
+**Branch:** `experiment-spectrum-wake-double-standby`, creato da `experiment-spectrum-resync-on-wake` (`071929c`). Commit della correzione: `5171084`. Il branch RGB `fix-basilisk-v4-hyperspeed-rgb` **non è stato toccato**.
+
+#### Evidenza: il log reale `%APPDATA%\Secretarybird\secbird.log` del PC dell'utente
+
+Stato al momento della prova (letto da `tray.json` e `profiles.json`): `spectrum_wake_sync: true`, **`away_lights: "off"`**, Spectrum sia su tastiera (`backlight`, LED 5) sia sul mouse (`underglow`, LED 10), `sleep_minutes: 1` su **entrambi**. Estratto (build del prototipo bidirezionale, senza seriali):
+
+```text
+07:57:52Z tray started
+07:57:53Z found: Basilisk V4 HyperSpeed (Wireless), BlackWidow V4 Low-Profile HyperSpeed
+07:57:54Z Spectrum wake: observing raw input PID 00EA
+07:57:58Z Spectrum wake: observing raw input PID 00EA      <- raw_devices svuotata dal retry rescan +4 s
+07:59:18Z Spectrum wake: observing raw input PID 00EA      <- mouse risvegliato
+07:59:30Z Spectrum wake: observing raw input PID 02C9      <- tastiera risvegliata (primo tasto dall'avvio)
+07:59:31Z Spectrum wake: restarted 0 zones on keyboard/mouse
+07:59:59Z found: BlackWidow V4 Low-Profile HyperSpeed       <- "nuova": era stata tolta dalla lista
+08:02:13Z ... 08:21:52Z  Spectrum wake: restarted 2 zones (7 volte)
+```
+
+#### Causa CONFERMATA (catena ricostruita dal log + codice)
+
+1. All'avvio `start_retries` fa rescan a +4 s, +15 s, +45 s, poi ogni 60 s per 30 min finché `has_sleeping()`. Il rescan delle ~07:58:59 è avvenuto con la tastiera **già in standby** (nessun tasto dall'avvio, timer 1 min): `probe_exact` (GET seriale, txid FF) non ha risposto e **`Engine::rescan` ha tolto la tastiera da `devices`** (finita in `unsupported` come ASLEEP). Il rescan svuotava anche la cache `raw_devices` (da qui i doppi "observing").
+2. 07:59:18 mouse sveglio, 07:59:30 tastiera sveglia → `WakeTracker` ha programmato la sync → `resync_spectrum` ha trovato **un solo** dispositivo con Spectrum (`distinct.len() < 2`) → **0 zone, nessun comando**. Poi `finished()` ha **azzerato comunque `pending_wake`**: il risveglio è andato perso.
+3. 07:59:59 lo "sleeper retry" ha ritrovato la tastiera come dispositivo nuovo e `App::rescan` le ha fatto **`apply()` del profilo da sola** → Spectrum della sola tastiera riavviato **fuori fase**. Nessuno l'ha più risincronizzato.
+
+Quindi il caso "entrambi dormono" fallisce quando un rescan cade mentre un dispositivo dorme. Succede sempre nei primi ~2 minuti dopo l'avvio, poi ogni 60 s per 30 minuti dopo avvio o resume (finché c'è un dispositivo addormentato), e a ogni `WM_DEVICECHANGE` Razer. Con un solo dispositivo addormentato e l'altro in uso non c'è rescan di mezzo: per questo quel caso funzionava.
+
+#### Altri difetti reali trovati nel codice (non ancora visti nel log)
+
+- **`away_lights: "off"`** (impostato dall'utente): al ritorno `lights_back` riapplica i profili a chi risponde; chi dormiva entra in `relight` e `retry_lights_back` (ogni 3 s per 2 min) gli riapplica il profilo **da solo** quando risponde → stesso sfasamento.
+- `both_active` significava solo "input negli ultimi 60 s": un dispositivo sveglio ma fermo da >60 s era trattato come addormentato (con timer più lunghi di 1 min).
+- Se `with_app` falliva al timer (app ri-entrata), `scheduled` restava `true` per sempre: nessuna sync fino al riavvio.
+- `resync_spectrum(None)` dal timer: un errore sul dispositivo appena svegliato non fermava la scrittura sugli altri; gli esiti per zona non venivano registrati.
+
+#### Ipotesi NON confermate (da verificare con il nuovo log)
+
+- I 7 eventi `restarted 2 zones` dopo le 08:00 hanno scritto entrambi i LED con successo; **non si sa** quali corrispondano a prove "entrambi in standby". Se l'utente ha visto sfasamento anche in uno di questi, esiste una seconda causa. Candidata principale: il firmware della **tastiera** reinizializza le luci più tardi di 1,5 s dopo il primo tasto, sovrascrivendo il riavvio. Il caso "solo tastiera in standby" **non è mai stato confermato** su hardware. Per questo esiste `spectrum_wake_settle_ms` (sotto).
+- Al rescan delle 07:58:59 il mouse **non** è stato tolto dalla lista, pur con ~61 s di inattività. Due spiegazioni: il dongle Basilisk risponde alla GET seriale anche col mouse addormentato, oppure il mouse non dormiva ancora. Il nuovo log (`gone:`) lo chiarirà.
+- Non è noto se una SET verso un dispositivo addormentato lo risvegli; il nuovo codice **evita** di scrivere a dispositivi presunti addormentati.
+
+#### Nuovo progetto (`crates/secbird-tray/src/wake_sync.rs`, logica pura e testata)
+
+- **Peer** per ogni PID: `wireless` + timer di standby dal profilo (`sleep_minutes`; 55 s se ignoto). Un device cablato non "si sveglia" mai ed è sempre sveglio.
+- **Wake** = primo input Raw Input dopo un silenzio ≥ timer − 5 s (55 s con timer 1 min). **Sveglio** = input più recente di quella soglia. Nessuna interrogazione HID per saperlo.
+- A ogni wake, dopo `SETTLE` (1,5 s): **Plan** = prima i device appena svegli (strict), poi gli altri con Spectrum **certamente svegli**. Se meno di due → `Wait` ("waiting for 02C9 to wake"): **nessun comando**, nemmeno al device sveglio. Quando l'altro si sveglia, il suo wake fa la sync. Funziona in entrambi gli ordini e con qualunque distanza tra i risvegli.
+- **Missing**: se il device sveglio non è in `Engine::devices` (tolto da un rescan mentre dormiva) → **un rescan mirato**, poi la scrittura.
+- **NotReady**: se il device svegliato non accetta la SET → stop (gli altri non vengono riavviati fuori fase) e al massimo **2 retry** (+2 s, +4 s, ciascuno preceduto da rescan); poi si attende il prossimo wake. Niente flusso continuo di comandi.
+- **Profilo rimandato dalla tray da sola** (rescan che ritrova un device, `retry_lights_back`) → nuova sync con i device svegli. Non dopo `apply_all` (avvio, resume, `lights_back`): lì tutti ripartono insieme.
+- `RIDEV_DEVNOTIFY` + `WM_INPUT_DEVICE_CHANGE` mantengono la cache handle→PID (prima veniva svuotata a ogni rescan). PID Razer letto genericamente da `VID_1532&PID_xxxx`, non più due PID cablati nel codice. Il timer viene ri-armato se l'app è occupata.
+- Disattivando l'opzione nell'editor i wake vengono ignorati subito; per **attivarla** serve ancora riavviare la tray (registrazione Raw Input all'avvio).
+- `tray.json` → `"spectrum_wake_settle_ms": 3000` (opzionale, solo a mano, 500–10000) per provare un'attesa più lunga dopo il wake **senza ricompilare**.
+
+#### Messaggi di log nuovi (prefisso `Spectrum wake:`)
+
+| Riga | Significato |
+| --- | --- |
+| `raw input device 0x… is Razer 02C9 MI_02 COL01` | Collezione HID del ricevitore vista da Raw Input (all'avvio e a ogni arrivo). |
+| `raw input device 0x… (Razer 00EA) removed` | Windows ha rimosso la collezione: utile per capire se lo standby ri-enumera il dongle. |
+| `00EA woke (after 312 s quiet); 00EA quiet 0 s, 02C9 quiet 300 s, may be asleep` | Wake rilevato e stato presunto degli altri. |
+| `attempt 1: nothing written, waiting for 02C9 to wake` | Corretto quando l'altro dorme. |
+| `02C9 isn't in the device list (dropped while asleep?): rescanning` | Il caso del bug confermato, ora gestito. |
+| `attempt 1 on 02C9, 00EA: 02C9 backlight ok (31 ms), 00EA underglow ok (28 ms)` | Scrittura riuscita, nell'ordine e con i tempi. |
+| `… failed: … ` / `trying again in 2 s` / `giving up until the next wake` | Device non pronto, retry limitati. |
+| `00EA got its profile again; syncing` | La tray ha rimandato un profilo da sola; segue sync. |
+| `gone: BlackWidow … (asleep or unplugged)` (senza prefisso) | Un rescan ha tolto un device dalla lista. |
+| `Spectrum re-sync now: …` | Esito del pulsante manuale. |
+
+#### Test automatici aggiunti (19, in `wake_sync.rs`)
+
+Entrambi in standby → mouse poi tastiera e tastiera poi mouse, a **10 s** e **90 s** (primo device in uso); entrambi gli ordini con il primo device **tornato in standby** prima del secondo wake; un solo device in standby (mouse; tastiera) come regressione del caso funzionante; **tastiera tolta dalla lista mentre dormiva** (il caso del log); 2 retry poi attesa; nuovo wake che azzera i retry; input continuo per 10 min senza nuove scritture; profilo rimandato; device cablato; timer di standby dal profilo; PID sconosciuti; device senza Spectrum; riga di log; parsing dei percorsi Raw Input.
+
+#### Limiti noti
+
+- Ricevitore Multi-Device condiviso (mouse su 02C9): Raw Input attribuisce anche l'input del mouse al PID 02C9. Non gestito: configurazione attualmente non usata.
+- Gli `apply` fatti dall'editor o dal cambio profilo per programma in primo piano non attivano la sync (c'è "Re-sync now").
+- Due unità dello stesso modello (stesso PID) non sono distinte.
+- Il primo input dopo l'avvio della tray conta come wake: una sync in più all'avvio.
+- Sul PC c'è anche `%APPDATA%\Secretarybird\devices.json` (18/10, solo 02C9/02CC) che si fonde col database integrato: non modificato.
+- All'avvio di Windows parte la versione **installata** 0.5.0 (autostart): nel log delle 07:43 dà `unknown lighting zone 'underglow'` (database vecchio). Per i test va chiusa prima di avviare la build di prova.
+
 ## 5. Branch e commit sul fork (controllati il 29/10/2026)
 
 | Branch | Commit noto prima di questo handoff | Uso |
@@ -185,6 +267,7 @@ L'utente vuole che i due dispositivi con Spectrum Cycling ritornino in fase dopo
 | `test-02c9-readonly-tray` | `2127df4285c4b005e766ed5883d9fec8b76f6b6d` | Esperimento incompleto/obsoleto; evitare come base. |
 | `add-blackwidow-v4-low-profile-wired-02cc` | `b019fc9da2e713aec0204f25b0636ecb3df09917` | PR #31 già merged. |
 | `fix-dpi-on-non-mouse-devices` | `2e4bc68955631c839c152179a87c9baccc8aea66` | PR #32 già merged. |
+| `experiment-spectrum-wake-double-standby` | `5171084` (+ commit di questo documento) | **Correzione doppio standby (§4.1)**, basata su `experiment-spectrum-resync-on-wake`. Sperimentale, da verificare su hardware. |
 
 **Tutti questi branch esistono già nel fork remoto**. Non occorre accorparli in `main` per “salvarli”: farlo mescolerebbe codice sperimentale a patch validate. Il presente `CLAUDE.md` è copiato su `main` e su `experiment-spectrum-resync-on-wake`. Dopo il salvataggio, gli HEAD di questi due branch saranno nuovi rispetto alla tabella; ricontrollarli con `git fetch --all`.
 
@@ -195,6 +278,7 @@ L'utente vuole che i due dispositivi con Spectrum Cycling ritornino in fase dopo
 - RGB patch test: https://github.com/lukethehawk/secbird/actions/runs/40760671241 — successful.
 - Primo Spectrum wake prototype (solo mouse): https://github.com/lukethehawk/secbird/actions/runs/40767796461 — successful.
 - Prototipo bidirezionale più recente: https://github.com/lukethehawk/secbird/actions/runs/40771276269 — **Clippy, Rust tests, Windows release build SUCCESSFUL**, artifact `secbird-wake-spectrum-windows-test`, **ma bug double-standby in hardware reale**.
+- **Correzione doppio standby** (`experiment-spectrum-wake-double-standby`, commit `5171084`): https://github.com/lukethehawk/secbird/actions/runs/40844505774 — **Clippy `-D warnings`, test Rust (core 103 ok/5 ignored; tray 20 ok, di cui 19 nuovi in `wake_sync`), build release: SUCCESSFUL** (29/10/2026). Artifact `secbird-experiment-spectrum-wake-double-standby-windows` (scade il 12/11/2026). Il messaggio di commit dice "21 tests": il numero corretto è 19. **Verifica hardware ancora da fare.**
 - GitHub Actions artifacts possono scadere; si possono ricompilare i branch.
 - Installazione build: uscire **completamente** dall'istanza tray precedente. Single-instance mutex `Local\\Secretarybird.Tray`: se già attiva, lanciare altro EXE potrebbe aprire l'editor della **vecchia istanza** e falsare il test.
 - PowerShell nella cartella dei binari: `.\\secbird-tray.exe --editor`. Non usare solo il nome senza `.\\`. Log: `%APPDATA%\\Secretarybird\\secbird.log`; profili/settings: `profiles.json`, `tray.json` nella cartella Secretarybird di AppData.
@@ -203,6 +287,7 @@ L'utente vuole che i due dispositivi con Spectrum Cycling ritornino in fase dopo
 ## 7. Come proseguire: ordine di lavoro
 
 1. **Priorità immediata:** sistemare il bug Spectrum con **entrambi i dispositivi addormentati**, preservando l'esito funzionante con un solo device dormiente. Iniziare da una diagnosi con logging e una macchina a stati corretta, non da sleep timer o ripair.
+   - **Stato al 29/10 (seconda sessione):** correzione in `experiment-spectrum-wake-double-standby` (§4.1), in attesa del test hardware dell'utente. Prossimo passo: far provare i 5 scenari, farsi dare **`secbird.log`** e confrontare le righe `Spectrum wake:` con quello che l'utente ha visto. Se resta sfasamento con `… ok` su entrambi i LED, provare `spectrum_wake_settle_ms` 3000 (ipotesi firmware tastiera).
 2. Tenere separato il branch `experiment-spectrum-resync-on-wake` dalla PR RGB. Il codice non ancora verificato non deve finire nella patch upstream.
 3. Gestire la PR RGB isolata appena opportuno con il pulsante GitHub “Create pull request” al link indicato. È indipendente dalla sincronizzazione.
 4. Dopo Spectrum verificare ancora button remapping e profili DPI, stabilità wireless duratura, eventuale allineamento RGB al risveglio di tastiera sola, e comportamenti in caso di lock/wake del PC.
