@@ -24,6 +24,7 @@
 | PR di correzione RGB verso upstream | Branch pronto, **PR non ancora aperta** al controllo del 29/10; creazione automatica via integrazione GitHub fallita con HTTP 403. |
 | Correzione doppio standby, branch `experiment-spectrum-wake-double-standby` | Causa principale **confermata dal log reale** (§4.1). Nuova macchina a stati + rescan mirato + retry limitati + log diagnostici. CI Windows: vedi §6. **NON ancora verificata su hardware: non dichiararla risolta.** |
 | ↳ Prima prova hardware della correzione (29/10/2026, 08:52–09:02 UTC) | **POSITIVA.** Utente: «mi pare si syncano sempre in ogni caso ora». Il log conferma la sync su entrambi i LED nei casi "entrambi in standby → tastiera poi mouse", "→ mouse poi tastiera" e nel caso esatto del bug (tastiera tolta dalla lista mentre dormiva). Dettagli e scenari non ancora coperti in §4.1. La riga "NON FUNZIONA" sopra resta valida per il **vecchio** prototipo. |
+| ↳ Terza prova, build `3b4c522` (29/10/2026, 10:22–10:33 UTC) | **POSITIVA.** Utente: «mi pare sia ok». Il retry dello spegnimento ha recuperato 2 volte il mouse. Il percorso riaccensione → sync è stato provato e ha scritto `ok` su entrambi. Resta non spiegata una tastiera che non risponde allo "screen off". Ancora da provare: sospensione del PC e uso prolungato (§4.1). |
 
 **Precisazione critica ricevuta durante l'handoff (29/10/2026):**
 > «Errata corrige, non ha funzionato quando entrambi i device sono andati in stand by e ne ho riattivato uno alla volta, se invece ne va solo uno e lo riattivo, si syncano correttamente».
@@ -274,7 +275,7 @@ Build della run 40844505774, avviata da cartella nuova; log vecchio rinominato i
 **Non ancora coperto esplicitamente dal log** (il feedback dice "in ogni caso", ma restano da verificare in modo mirato):
 - Il primo dispositivo che torna in standby prima che si svegli il secondo (scenario 5).
 - La regressione con un solo dispositivo in standby e l'altro in uso: mouse da solo, tastiera da sola senza Win+L.
-- Blocco lungo o schermo spento con `away_lights: "off"` mentre entrambi dormono: è il percorso `retry_lights_back` → sync.
+- Blocco lungo o schermo spento con `away_lights: "off"` mentre entrambi dormono: è il percorso `retry_lights_back` → sync. *(Percorso coperto nella terza prova, 10:32 UTC.)*
 - Sospensione e ripresa del PC; uso reale per ore.
 
 #### Seconda prova: schermo spento da Windows e Win+L (29/10/2026, 09:10–09:13 UTC)
@@ -310,6 +311,37 @@ Richiesta esplicita dell'utente dopo la seconda prova.
 
 **Messaggio da migliorare (cosmetico, risolto in `3b4c522`):** con la tastiera fuori lista il log dice `no other device shows Spectrum`. Più preciso sarebbe "the other device is not in the list (asleep?)": il planner vede solo i dispositivi presenti.
 
+#### Terza prova: build `3b4c522`, schermo spento (29/10/2026, 10:22–10:33 UTC = 11:22–11:33 locali)
+
+Build della run 40848946895, tray avviata alle 10:22:10. `tray.json`: `away_lights: "off"`, `spectrum_wake_sync: true`, nessun `spectrum_wake_settle_ms`. `profiles.json` al momento della lettura: standby **6 min su entrambi** (mouse e tastiera). Timeout schermo di Windows: 1 min. Feedback utente: **«mi pare sia ok»**.
+
+```text
+10:22:11 00EA woke (first input seen); 02C9 no input yet          <- limite noto: primo input dopo l'avvio
+10:22:12 attempt 1: nothing written, waiting for 02C9 to wake
+10:25:46 screen off: lights to 0%; not answering: Basilisk V4 HyperSpeed (Wireless), trying again for 30 s
+10:25:47 lights away: Basilisk V4 HyperSpeed (Wireless) answered on a retry
+10:26:07 back: lights as saved
+10:27:13 screen off: lights to 0%; not answering: Basilisk V4 HyperSpeed (Wireless), trying again for 30 s
+10:27:14 lights away: Basilisk V4 HyperSpeed (Wireless) answered on a retry
+10:27:42 02C9 woke (first input seen); 00EA quiet 90 s
+10:27:42 back: lights as saved
+10:27:44 attempt 1 on 02C9, 00EA: 02C9 backlight ok (38 ms), 00EA underglow ok (19 ms)
+10:32:04 screen off: lights to 0%; not answering: BlackWidow V4 Low-Profile HyperSpeed, trying again for 30 s
+10:32:36 lights away: gave up on BlackWidow V4 Low-Profile HyperSpeed (not answering)
+10:32:49 back: lights as saved; not answering: Basilisk V4 HyperSpeed (Wireless), trying again for 120 s
+10:32:57 lights back: Basilisk V4 HyperSpeed (Wireless) answered on a retry
+10:32:57 00EA got its profile again; syncing
+10:32:58 attempt 1 on 00EA, 02C9: 00EA underglow ok (18 ms), 02C9 backlight ok (23 ms)
+```
+
+Analisi:
+- **Retry "away" CONFERMATO su hardware.** Il mouse ha perso il primo comando di spegnimento **2 volte su 3** e lo ha preso al retry ~1 s dopo. È lo stesso tipo di errore che alle 09:12:05 aveva lasciato il LED acceso; ora viene recuperato. Il mancato comando allo "screen off" quindi non è raro. La causa resta ignota (ipotesi: dongle occupato o radio del mouse in risparmio).
+- **Percorso `retry_lights_back` → sync CONFERMATO su hardware** (era il punto non provato della seconda prova). Al ritorno delle 10:32:49 il mouse non ha risposto per ~8 s, il retry lo ha riacceso e la sync è partita subito dopo con `ok` su entrambi.
+- **Tastiera senza risposta per 30 s allo "screen off" delle 10:32:04: NON spiegato.** Con il timeout schermo di 1 min l'ultimo input era al più alle 10:31:04. La tastiera aveva dato input alle 10:27:42, e con un timer di 6 min non doveva ancora dormire. Ipotesi non confermate: il firmware della tastiera entra in un risparmio energetico prima del timer, oppure il dongle era occupato. L'effetto visibile non è noto: da chiedere all'utente se i LED della tastiera sono rimasti accesi verso le 11:32 locali. Al ritorno (10:32:49) la tastiera ha preso subito il profilo, quindi la sync non ne ha risentito.
+- Nessun `gone:`, nessun rescan e nessun `trying again` della sync Spectrum in questa sessione.
+
+**Ancora da coprire:** sospensione e ripresa del PC; uso reale per ore; scenario 5 (il primo device torna in standby prima che si svegli il secondo); regressione con un solo device in standby senza Win+L; la tastiera che non risponde allo "screen off".
+
 #### Limiti noti
 
 - Ricevitore Multi-Device condiviso (mouse su 02C9): Raw Input attribuisce anche l'input del mouse al PID 02C9. Non gestito: configurazione attualmente non usata.
@@ -334,7 +366,7 @@ Richiesta esplicita dell'utente dopo la seconda prova.
 | `test-02c9-readonly-tray` | `2127df4285c4b005e766ed5883d9fec8b76f6b6d` | Esperimento incompleto/obsoleto; evitare come base. |
 | `add-blackwidow-v4-low-profile-wired-02cc` | `b019fc9da2e713aec0204f25b0636ecb3df09917` | PR #31 già merged. |
 | `fix-dpi-on-non-mouse-devices` | `2e4bc68955631c839c152179a87c9baccc8aea66` | PR #32 già merged. |
-| `experiment-spectrum-wake-double-standby` | `5171084` (+ commit di questo documento) | **Correzione doppio standby (§4.1)**, basata su `experiment-spectrum-resync-on-wake`. Sperimentale, da verificare su hardware. |
+| `experiment-spectrum-wake-double-standby` | `5171084`, poi `3b4c522` (+ commit di questo documento) | **Correzione doppio standby (§4.1)**, basata su `experiment-spectrum-resync-on-wake`. Sperimentale. Tre prove hardware positive il 29/10; non ancora provati la sospensione del PC e l'uso prolungato. Non è in `main`. |
 
 **Tutti questi branch esistono già nel fork remoto**. Non occorre accorparli in `main` per “salvarli”: farlo mescolerebbe codice sperimentale a patch validate. Il presente `CLAUDE.md` è copiato su `main` e su `experiment-spectrum-resync-on-wake`. Dopo il salvataggio, gli HEAD di questi due branch saranno nuovi rispetto alla tabella; ricontrollarli con `git fetch --all`.
 
@@ -346,7 +378,7 @@ Richiesta esplicita dell'utente dopo la seconda prova.
 - Primo Spectrum wake prototype (solo mouse): https://github.com/lukethehawk/secbird/actions/runs/40767796461 — successful.
 - Prototipo bidirezionale più recente: https://github.com/lukethehawk/secbird/actions/runs/40771276269 — **Clippy, Rust tests, Windows release build SUCCESSFUL**, artifact `secbird-wake-spectrum-windows-test`, **ma bug double-standby in hardware reale**.
 - **Correzione doppio standby** (`experiment-spectrum-wake-double-standby`, commit `5171084`): https://github.com/lukethehawk/secbird/actions/runs/40844505774 — **Clippy `-D warnings`, test Rust (core 103 ok/5 ignored; tray 20 ok, di cui 19 nuovi in `wake_sync`), build release: SUCCESSFUL** (29/10/2026). Artifact `secbird-experiment-spectrum-wake-double-standby-windows` (scade il 12/11/2026). Il messaggio di commit dice "21 tests": il numero corretto è 19. **Verifica hardware ancora da fare.**
-- **Retry luci away + timer freschi** (commit `3b4c522`): https://github.com/lukethehawk/secbird/actions/runs/40848946895 — Clippy, test (core 103 ok/5 ignored; tray **22 ok**), build release: **SUCCESSFUL**. Artifact `secbird-experiment-spectrum-wake-double-standby-windows` (scade il 12/11/2026). Da provare su hardware.
+- **Retry luci away + timer freschi** (commit `3b4c522`): https://github.com/lukethehawk/secbird/actions/runs/40848946895 — Clippy, test (core 103 ok/5 ignored; tray **22 ok**), build release: **SUCCESSFUL**. Artifact `secbird-experiment-spectrum-wake-double-standby-windows` (scade il 12/11/2026). Provata su hardware il 29/10: **positiva** (terza prova, §4.1).
 - GitHub Actions artifacts possono scadere; si possono ricompilare i branch.
 - Installazione build: uscire **completamente** dall'istanza tray precedente. Single-instance mutex `Local\\Secretarybird.Tray`: se già attiva, lanciare altro EXE potrebbe aprire l'editor della **vecchia istanza** e falsare il test.
 - PowerShell nella cartella dei binari: `.\\secbird-tray.exe --editor`. Non usare solo il nome senza `.\\`. Log: `%APPDATA%\\Secretarybird\\secbird.log`; profili/settings: `profiles.json`, `tray.json` nella cartella Secretarybird di AppData.
@@ -357,6 +389,7 @@ Richiesta esplicita dell'utente dopo la seconda prova.
 1. **Priorità immediata:** sistemare il bug Spectrum con **entrambi i dispositivi addormentati**, preservando l'esito funzionante con un solo device dormiente. Iniziare da una diagnosi con logging e una macchina a stati corretta, non da sleep timer o ripair.
    - **Stato al 29/10 (seconda sessione):** correzione in `experiment-spectrum-wake-double-standby` (§4.1), in attesa del test hardware dell'utente. Prossimo passo: far provare i 5 scenari, farsi dare **`secbird.log`** e confrontare le righe `Spectrum wake:` con quello che l'utente ha visto. Se resta sfasamento con `… ok` su entrambi i LED, provare `spectrum_wake_settle_ms` 3000 (ipotesi firmware tastiera).
    - **Aggiornamento 29/10, dopo la prima prova:** esito **positivo** su hardware (§4.1, "Prima prova hardware"). Restano da coprire: primo device tornato in standby, regressione con un solo device in standby, blocco lungo/schermo spento con `away_lights: "off"`, sospensione del PC e uso prolungato. Solo dopo valutare una PR upstream; andrà ricostruita su upstream `main` **senza** il codice del ricevitore condiviso e separata dalla PR RGB.
+   - **Aggiornamento 29/10, dopo la terza prova (build `3b4c522`):** positiva. Il retry dello spegnimento funziona e il percorso riaccensione → sync è stato provato. Restano: sospensione e ripresa del PC, uso prolungato, scenario 5, un solo device in standby senza Win+L, e la tastiera che allo "screen off" delle 10:32 UTC non ha risposto per 30 s (causa ignota). Nessun merge su `main` senza la richiesta esplicita dell'utente.
 2. Tenere separato il branch `experiment-spectrum-resync-on-wake` dalla PR RGB. Il codice non ancora verificato non deve finire nella patch upstream.
 3. Gestire la PR RGB isolata appena opportuno con il pulsante GitHub “Create pull request” al link indicato. È indipendente dalla sincronizzazione.
 4. Dopo Spectrum verificare ancora button remapping e profili DPI, stabilità wireless duratura, eventuale allineamento RGB al risveglio di tastiera sola, e comportamenti in caso di lock/wake del PC.
