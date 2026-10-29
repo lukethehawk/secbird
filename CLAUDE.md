@@ -343,6 +343,35 @@ Analisi:
 
 **Ancora da coprire:** sospensione e ripresa del PC; uso reale per ore; scenario 5 (il primo device torna in standby prima che si svegli il secondo); regressione con un solo device in standby senza Win+L; la tastiera che non risponde allo "screen off".
 
+#### Deriva con i dispositivi svegli: riavvio a fine giro (commit `1910dfb`, solo branch sperimentale)
+
+Osservazione dell'utente (29/10, dopo la terza prova): «dopo un po' i dispositivi perdono il sync, come se gli effetti differissero di qualche ms e alla lunga perdano il ritmo».
+
+- **Causa (ragionamento, coerente con il codice):** lo Spectrum gira nel firmware di ogni dispositivo, con il suo orologio. Secretarybird manda solo la SET 0F:02, e lo Spectrum non ha un parametro di velocità (`Effect::Spectrum.params() == (3, 0, 0, [])`). Due orologi non coincidono mai, quindi lo sfasamento cresce mentre i dispositivi restano svegli. La sync al risveglio li riallinea solo a risveglio, ritorno da away o "Re-sync now". Lo sfasamento iniziale fra le due scritture (20–40 ms) è costante e non spiega la crescita.
+- **NON noti:** la velocità della deriva; la durata esatta di un giro; se i due dispositivi hanno lo stesso periodo nominale (la crescita lenta lo fa supporre); se una SET conta come attività per il timer di standby del dispositivo.
+- **Scartati:**
+  - Effetto calcolato dal PC: traffico continuo, tiene svegli i wireless, contro i vincoli.
+  - Riavvio periodico semplice: salto di colore visibile.
+- **Soluzione:** riavvio periodico allineato al giro, `wake_sync::Cycle::realign`.
+  - Dall'ultimo riavvio comune (`Engine::spectrum_since`) la tray conta i giri e riavvia dopo `every` minuti, esattamente su un multiplo del periodo, con tolleranza di ±250 ms. In quel momento il colore iniziale è quello già mostrato: il salto è solo la deriva.
+  - L'errore sul periodo misurato non si accumula oltre un intervallo, perché ogni riavvio azzera il conteggio.
+- **Quando scrive:**
+  - Solo a dispositivi in uso, cioè con input Raw Input negli ultimi 60 s e comunque entro il loro timer di standby (`WakeSync::in_use`).
+  - Se uno non è in uso: riga `due, waiting for input from …`; il suo prossimo input riarma il timer. Nessun polling e nessun comando nel frattempo.
+  - Niente mentre si è away, e niente con meno di due dispositivi su Spectrum.
+  - Una scrittura fallita non viene ritentata: aspetta la prossima sync.
+- **Da cosa conta:** `spectrum_since` si aggiorna a ogni sync scritta con successo su ≥2 dispositivi (wake, Re-sync now, battito) e all'invio dei profili a tutti (avvio, resume, ritorno da away). Il battito luci da 3 s, già esistente, vede il cambio e riarma `TIMER_SPECTRUM_CYCLE` (9); questo battito non manda nulla ai dispositivi.
+- **Impostazioni `tray.json`, solo a mano:**
+  - `"spectrum_cycle_ms"`: durata misurata di un giro, 1000–120000. Senza questo valore la funzione è spenta e nulla cambia.
+  - `"spectrum_resync_minutes"`: intervallo, 1–240, default 10.
+  - Serve `spectrum_wake_sync: true`. Va riavviata la tray dopo aver cambiato i valori, oppure si aspetta il prossimo riavvio comune.
+- **Log:** `Spectrum cycle: next restart in 605 s, on a cycle boundary`; `Spectrum cycle: restart on a cycle boundary, 10 min after the last: 02C9 backlight ok (…), 00EA underglow ok (…)`; `Spectrum cycle: due, waiting for input from 00EA; …`.
+- **Test (4 nuovi):** primo confine dopo l'intervallo; timer in anticipo o in ritardo di qualche ms; un'ora dopo; solo i dispositivi in uso (timer di standby da 1 min incluso). CI: vedi §6.
+- **Misure richieste all'utente:**
+  1. Durata del giro: dopo "Re-sync now", cronometrare 20 o più giri completi (per esempio da rosso a rosso), su tastiera e su mouse.
+  2. Dopo quanti minuti lo sfasamento diventa visibile: serve a scegliere `spectrum_resync_minutes`.
+- **Non provato su hardware.** Non è nella PR #70.
+
 #### Limiti noti
 
 - Ricevitore Multi-Device condiviso (mouse su 02C9): Raw Input attribuisce anche l'input del mouse al PID 02C9. Non gestito: configurazione attualmente non usata.
@@ -387,6 +416,7 @@ Analisi:
 - Prototipo bidirezionale più recente: https://github.com/lukethehawk/secbird/actions/runs/40771276269 — **Clippy, Rust tests, Windows release build SUCCESSFUL**, artifact `secbird-wake-spectrum-windows-test`, **ma bug double-standby in hardware reale**.
 - **Correzione doppio standby** (`experiment-spectrum-wake-double-standby`, commit `5171084`): https://github.com/lukethehawk/secbird/actions/runs/40844505774 — **Clippy `-D warnings`, test Rust (core 103 ok/5 ignored; tray 20 ok, di cui 19 nuovi in `wake_sync`), build release: SUCCESSFUL** (29/10/2026). Artifact `secbird-experiment-spectrum-wake-double-standby-windows` (scade il 12/11/2026). Il messaggio di commit dice "21 tests": il numero corretto è 19. **Verifica hardware ancora da fare.**
 - **Retry luci away + timer freschi** (commit `3b4c522`): https://github.com/lukethehawk/secbird/actions/runs/40848946895 — Clippy, test (core 103 ok/5 ignored; tray **22 ok**), build release: **SUCCESSFUL**. Artifact `secbird-experiment-spectrum-wake-double-standby-windows` (scade il 12/11/2026). Provata su hardware il 29/10: **positiva** (terza prova, §4.1).
+- **Riavvio a fine giro** (commit `1910dfb`, branch sperimentale): https://github.com/lukethehawk/secbird/actions/runs/40864904890 — Clippy, test (core 103 ok/5 ignored; tray **26 ok**), build release: **SUCCESSFUL**. Artifact `secbird-experiment-spectrum-wake-double-standby-windows` (scade il 12/11/2026). Da provare su hardware, dopo la misura del giro.
 - GitHub Actions artifacts possono scadere; si possono ricompilare i branch.
 - Installazione build: uscire **completamente** dall'istanza tray precedente. Single-instance mutex `Local\\Secretarybird.Tray`: se già attiva, lanciare altro EXE potrebbe aprire l'editor della **vecchia istanza** e falsare il test.
 - PowerShell nella cartella dei binari: `.\\secbird-tray.exe --editor`. Non usare solo il nome senza `.\\`. Log: `%APPDATA%\\Secretarybird\\secbird.log`; profili/settings: `profiles.json`, `tray.json` nella cartella Secretarybird di AppData.
@@ -404,6 +434,7 @@ Analisi:
      3. `fix-basilisk-v4-hyperspeed-rgb`. Il template PR di upstream chiede un device report per le modifiche a `devices.json`.
      Il codice del ricevitore condiviso resta fuori. Le bozze delle descrizioni sono in `pr-drafts/` nella cartella locale (esclusa da git con `.git/info/exclude`). Le PR si aprono solo dopo l'ok esplicito dell'utente.
    - **Aperte il 29/10/2026** dopo l'ok dell'utente («Apri tutte e tre»): [#68](https://github.com/infinityInfinite/secbird/pull/68) `lights-away-retry`, [#69](https://github.com/infinityInfinite/secbird/pull/69) `fix-basilisk-v4-hyperspeed-rgb`, [#70](https://github.com/infinityInfinite/secbird/pull/70) `spectrum-wake-sync`. Le correzioni chieste dal maintainer vanno fatte su quei branch, non su `experiment-spectrum-wake-double-standby`. Se cambia il codice, riportare la modifica anche sul branch sperimentale.
+   - **29/10, deriva con dispositivi svegli:** riavvio a fine giro sul branch sperimentale (`1910dfb`, §4.1). Prossimo passo: l'utente misura la durata del giro e il tempo dopo cui lo sfasamento si vede; poi si imposta `spectrum_cycle_ms` in `tray.json` (a tray chiusa) e si prova. Solo se funziona va proposto upstream, come PR separata o come aggiunta a #70.
 2. Tenere separato il branch `experiment-spectrum-resync-on-wake` dalla PR RGB. Il codice non ancora verificato non deve finire nella patch upstream.
 3. Gestire la PR RGB isolata appena opportuno con il pulsante GitHub “Create pull request” al link indicato. È indipendente dalla sincronizzazione.
 4. Dopo Spectrum verificare ancora button remapping e profili DPI, stabilità wireless duratura, eventuale allineamento RGB al risveglio di tastiera sola, e comportamenti in caso di lock/wake del PC.
