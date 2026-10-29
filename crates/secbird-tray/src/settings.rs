@@ -55,10 +55,15 @@ pub struct TraySettings {
     /// or left as they are when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub away_lights: Option<String>,
-    /// Experimental: use passive wireless mouse input to re-phase Spectrum
-    /// across devices after long inactivity. Disabled by default.
+    /// Experimental: restart Spectrum on the devices together when one of them wakes, so
+    /// they cycle in step (see `wake_sync`). Wakes come from Windows Raw Input; no HID
+    /// polling. Off by default; read at start.
     #[serde(default)]
     pub spectrum_wake_sync: bool,
+    /// For testing that: how long to wait after a wake before writing, in milliseconds
+    /// (500 to 10 000). Unset means [`crate::wake_sync::SETTLE`]. Only set by hand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spectrum_wake_settle_ms: Option<u32>,
 }
 
 /// Choices for [`TraySettings::away_lights`], with the percent of the saved brightness.
@@ -78,6 +83,12 @@ impl TraySettings {
     pub fn away_percent(&self) -> Option<u8> {
         let want = self.away_lights.as_deref()?;
         AWAY_LIGHTS.iter().find(|(name, _)| *name == want).map(|(_, pct)| *pct)
+    }
+
+    /// The wait after a wake before Spectrum is written (see `spectrum_wake_settle_ms`).
+    pub fn spectrum_settle(&self) -> std::time::Duration {
+        self.spectrum_wake_settle_ms
+            .map_or(crate::wake_sync::SETTLE, |ms| std::time::Duration::from_millis(ms.clamp(500, 10_000).into()))
     }
 
     pub fn path() -> std::path::PathBuf {

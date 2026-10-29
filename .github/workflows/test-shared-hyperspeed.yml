@@ -2,7 +2,7 @@ name: Test shared HyperSpeed receiver support
 
 on:
   push:
-    branches: [test-02c9-shared-hyperspeed-receiver, experiment-spectrum-resync-on-wake]
+    branches: [test-02c9-shared-hyperspeed-receiver, experiment-spectrum-resync-on-wake, experiment-spectrum-wake-double-standby]
   workflow_dispatch:
 
 jobs:
@@ -23,8 +23,8 @@ jobs:
       - name: Upload test binaries
         uses: actions/upload-artifact@v4
         with:
-          name: secbird-wake-spectrum-windows-test
+          name: secbird-${{ github.ref_name }}-windows
           path: |
             target/release/secbird.exe
             target/release/secbird-tray.exe
-          retention-days: 7
+          retention-days: 14
