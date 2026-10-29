@@ -27,6 +27,9 @@ pub struct Engine {
     relight: HashMap<String, Instant>,
     /// Devices that didn't answer [`Engine::lights_away`], and until when to keep trying.
     dim: HashMap<String, Instant>,
+    /// When Spectrum was last restarted on every device together: a sync, or the profiles
+    /// sent to all of them. The Spectrum cycle beat counts from here (see `wake_sync::Cycle`).
+    spectrum_since: Option<Instant>,
 }
 
 const FINDER_PAUSE: Duration = Duration::from_secs(10 * 60);
@@ -119,6 +122,7 @@ impl Engine {
             away: None,
             relight: HashMap::new(),
             dim: HashMap::new(),
+            spectrum_since: None,
         })
     }
 
@@ -184,10 +188,11 @@ impl Engine {
     /// changing any profile. The first `strict` of them just woke: when one of those doesn't
     /// take the write, stop, so the rest aren't restarted out of step with it. Returns
     /// every write made.
-    pub fn restart_spectrum(&self, order: &[u16], strict: usize) -> Vec<ZoneWrite> {
+    pub fn restart_spectrum(&mut self, order: &[u16], strict: usize) -> Vec<ZoneWrite> {
         let Ok(mut store) = Self::store() else { return Vec::new() };
+        let started = Instant::now();
         let mut writes = Vec::new();
-        for (i, &pid) in order.iter().enumerate() {
+        'devices: for (i, &pid) in order.iter().enumerate() {
             for dev in self.devices.iter().filter(|d| d.pid == pid) {
                 for (led, zone) in self.spectrum_zones(&mut store, dev) {
                     let start = Instant::now();
@@ -195,12 +200,27 @@ impl Engine {
                     let stop = result.is_err() && i < strict;
                     writes.push(ZoneWrite { pid, zone, result, took: start.elapsed() });
                     if stop {
-                        return writes;
+                        break 'devices;
                     }
                 }
             }
         }
+        let mut pids: Vec<u16> = writes.iter().map(|w| w.pid).collect();
+        pids.dedup();
+        if pids.len() >= 2 && writes.iter().all(|w| w.result.is_ok()) {
+            self.spectrum_since = Some(started);
+        }
         writes
+    }
+
+    /// When Spectrum was last restarted on every device together, if since the tray started.
+    pub fn spectrum_since(&self) -> Option<Instant> {
+        self.spectrum_since
+    }
+
+    /// Every device was just sent its profile, starting at `at`, which restarted their Spectrum.
+    pub fn spectrum_restarted(&mut self, at: Instant) {
+        self.spectrum_since = Some(at);
     }
 
     /// Devices whose Raw Input may wake a Spectrum sync: those found, with the sleep timer
@@ -406,6 +426,7 @@ impl Engine {
         let missed = self.each_zone(|dev, led| dev.set_brightness_live(led, dev.brightness(led)?));
         let until = Instant::now() + RELIGHT_FOR;
         self.relight = missed.iter().map(|key| (key.clone(), until)).collect();
+        self.spectrum_since = Some(Instant::now());
         self.apply(&self.all_keys());
         missed
     }

@@ -64,6 +64,15 @@ pub struct TraySettings {
     /// (500 to 10 000). Unset means [`crate::wake_sync::SETTLE`]. Only set by hand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spectrum_wake_settle_ms: Option<u32>,
+    /// Experimental, with `spectrum_wake_sync`: the length of one Spectrum cycle in
+    /// milliseconds (1000 to 120 000), measured on the devices. When set, Spectrum is also
+    /// restarted on the devices in use every `spectrum_resync_minutes` (10 when unset), at a
+    /// cycle boundary where it doesn't show, so they don't drift apart between wakes (see
+    /// `wake_sync::Cycle`). Only set by hand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spectrum_cycle_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spectrum_resync_minutes: Option<u32>,
 }
 
 /// Choices for [`TraySettings::away_lights`], with the percent of the saved brightness.
@@ -89,6 +98,16 @@ impl TraySettings {
     pub fn spectrum_settle(&self) -> std::time::Duration {
         self.spectrum_wake_settle_ms
             .map_or(crate::wake_sync::SETTLE, |ms| std::time::Duration::from_millis(ms.clamp(500, 10_000).into()))
+    }
+
+    /// The Spectrum cycle beat, when `spectrum_cycle_ms` is set (see there).
+    pub fn spectrum_cycle(&self) -> Option<crate::wake_sync::Cycle> {
+        let ms = self.spectrum_cycle_ms.filter(|ms| (1_000..=120_000).contains(ms))?;
+        let minutes = self.spectrum_resync_minutes.map_or(10, |m| m.clamp(1, 240));
+        Some(crate::wake_sync::Cycle {
+            period: std::time::Duration::from_millis(ms.into()),
+            every: std::time::Duration::from_secs(u64::from(minutes) * 60),
+        })
     }
 
     pub fn path() -> std::path::PathBuf {

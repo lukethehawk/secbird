@@ -20,6 +20,11 @@ const SLEEP_MARGIN: Duration = Duration::from_secs(5);
 pub const SETTLE: Duration = Duration::from_millis(1_500);
 /// Further attempts while a device that woke doesn't take the write; then wait for its next wake.
 const RETRY_AFTER: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(4)];
+/// Only devices used this recently get the [`Cycle`] restart. If a device counts a write as
+/// activity at all, that moves its sleep back by under a minute, once per use.
+pub const IN_USE: Duration = Duration::from_secs(60);
+/// How far off a cycle boundary a [`Cycle`] restart may land and still not show.
+const ON_BOUNDARY: Duration = Duration::from_millis(250);
 
 /// What the tray knows about a device it may get input from, refreshed after each rescan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +133,14 @@ impl WakeSync {
         })
     }
 
+    /// Whether `pid` was used within `window`, and recently enough to be awake still; or is wired.
+    pub fn in_use(&self, pid: u16, now: Instant, window: Duration) -> bool {
+        self.peers.get(&pid).is_some_and(|peer| {
+            let window = window.min(peer.idle_limit());
+            !peer.wireless || self.last_input.get(&pid).is_some_and(|last| now.saturating_duration_since(*last) < window)
+        })
+    }
+
     /// The timer fired: the attempt to make, if one is due.
     pub fn start(&mut self) -> Option<Job> {
         if self.woke.is_empty() {
@@ -212,6 +225,46 @@ impl WakeSync {
             })
             .collect();
         parts.join(", ")
+    }
+}
+
+/// Keeping Spectrum in step while the devices stay awake. Each one runs the cycle on its own
+/// clock, and two clocks never quite agree, so devices restarted together drift apart a
+/// little more every minute. A restart sends a device back to the first colour of the
+/// cycle. Made when a whole number of cycles has passed since the last restart, that is the
+/// colour it shows anyway, so the restart doesn't show: it only takes the drift away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cycle {
+    /// The length of one Spectrum cycle, measured on the devices.
+    pub period: Duration,
+    /// How long to let them run between restarts.
+    pub every: Duration,
+}
+
+/// What [`Cycle::realign`] says to do.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Realign {
+    /// Restart Spectrum on the devices now.
+    Now,
+    /// Not yet: look again then.
+    At(Instant),
+}
+
+impl Cycle {
+    /// Spectrum was last restarted on every device at `since`. Restart it again `now` when
+    /// [`Cycle::every`] has passed and `now` is on a cycle boundary; otherwise wait for the
+    /// next boundary after both.
+    pub fn realign(&self, since: Instant, now: Instant) -> Realign {
+        let period = self.period.as_nanos().max(1);
+        let every = self.every.as_nanos();
+        let tolerance = ON_BOUNDARY.as_nanos();
+        let elapsed = now.saturating_duration_since(since).as_nanos();
+        let off = elapsed % period;
+        if elapsed + tolerance >= every && off.min(period - off) <= tolerance {
+            return Realign::Now;
+        }
+        let next = elapsed.max(every).div_ceil(period) * period;
+        Realign::At(since + Duration::from_nanos(u64::try_from(next).unwrap_or(u64::MAX)))
     }
 }
 
@@ -525,5 +578,54 @@ mod tests {
         assert_eq!(razer_pid("VID_1532&PID_+2C9"), None);
         assert_eq!(collection("VID_1532&PID_02C9"), "");
         assert_eq!(list(&BOTH), "02C9, 00EA");
+    }
+
+    /// 600 s is 82.2 cycles of 7.3 s: the 83rd ends 605.9 s after the restart.
+    const CYCLE: Cycle = Cycle { period: Duration::from_millis(7_300), every: Duration::from_secs(600) };
+
+    fn ms(ms: u64) -> Duration {
+        Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn the_cycle_restart_waits_for_the_first_boundary_after_the_interval() {
+        let since = Instant::now();
+        let boundary = since + ms(605_900);
+        assert_eq!(CYCLE.realign(since, since), Realign::At(boundary));
+        assert_eq!(CYCLE.realign(since, since + secs(300)), Realign::At(boundary));
+        assert_eq!(CYCLE.realign(since, since + secs(600)), Realign::At(boundary), "not on a boundary yet");
+        assert_eq!(CYCLE.realign(since, boundary), Realign::Now);
+    }
+
+    #[test]
+    fn a_timer_a_little_early_or_late_still_restarts_on_the_boundary() {
+        let since = Instant::now();
+        let boundary = since + ms(605_900);
+        assert_eq!(CYCLE.realign(since, boundary - ms(16)), Realign::Now);
+        assert_eq!(CYCLE.realign(since, boundary + ms(60)), Realign::Now);
+        // A second off, the jump back to the first colour would show: wait one more cycle.
+        assert_eq!(CYCLE.realign(since, boundary + secs(1)), Realign::At(boundary + ms(7_300)));
+    }
+
+    #[test]
+    fn long_after_the_interval_boundaries_still_count_from_the_last_restart() {
+        let since = Instant::now();
+        // An hour on (a device was left idle): 493.2 cycles, so the 494th, at 3606.2 s.
+        assert_eq!(CYCLE.realign(since, since + secs(3_600)), Realign::At(since + ms(3_606_200)));
+        assert_eq!(CYCLE.realign(since, since + ms(3_606_200)), Realign::Now);
+    }
+
+    #[test]
+    fn only_devices_used_in_the_last_minute_get_the_cycle_restart() {
+        let t0 = Instant::now();
+        let mut t = in_step(t0);
+        keep_using(&mut t, BLACKWIDOW, t0, 120);
+        let now = t0 + secs(125);
+        assert!(t.in_use(BLACKWIDOW, now, IN_USE));
+        assert!(!t.in_use(BASILISK, now, IN_USE), "quiet for two minutes");
+        assert!(!t.in_use(BLACKWIDOW, t0 + secs(177), IN_USE), "57 s quiet: past its one-minute sleep timer, less the margin");
+        t.set_peers(HashMap::from([(BLACKWIDOW, ONE_MINUTE), (BASILISK, Peer { wireless: false, sleep: None })]));
+        assert!(t.in_use(BASILISK, now, IN_USE), "a wired device never sleeps");
+        assert!(!t.in_use(0x1234, now, IN_USE), "not a device the tray knows");
     }
 }

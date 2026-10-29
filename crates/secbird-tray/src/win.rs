@@ -1,5 +1,5 @@
 use crate::engine::{describe_writes, ApplyReport, Battery, Engine, LightsRetry, DIM_FOR, RELIGHT_FOR};
-use crate::wake_sync::{self, Job, Outcome, Plan, WakeSync};
+use crate::wake_sync::{self, Job, Outcome, Plan, Realign, WakeSync};
 use secbird_core::log;
 use std::collections::{HashMap, HashSet};
 use crate::settings::{autostart_enabled, open_config_folder, set_autostart, TraySettings};
@@ -80,6 +80,10 @@ const LIGHTS_MS: u32 = 3_000;
 /// Spectrum restarted on the devices together after one wakes (see `wake_sync`): armed by
 /// each wake, each profile the tray sends by itself, and each retry.
 const TIMER_SPECTRUM_WAKE: usize = 8;
+/// Spectrum restarted on the devices in use every few minutes, on a cycle boundary, so they
+/// don't drift apart while they stay awake (see `wake_sync::Cycle`). Only with a cycle
+/// length set in `tray.json`.
+const TIMER_SPECTRUM_CYCLE: usize = 9;
 
 const ID_REAPPLY: u32 = 1;
 const ID_FOLDER: u32 = 2;
@@ -147,6 +151,11 @@ struct App {
     /// and forgotten when Windows says the device went away.
     raw_devices: HashMap<isize, Option<u16>>,
     wake_sync: WakeSync,
+    /// The restart the Spectrum cycle timer counts from ([`Engine::spectrum_since`]).
+    cycle_since: Option<Instant>,
+    /// Devices that weren't in use when a cycle restart was due: their next input sets the
+    /// timer again.
+    cycle_waiting: Vec<u16>,
 }
 
 /// What clicking a notification does.
@@ -332,6 +341,8 @@ pub fn run() {
                 wake_sync_on: false,
                 raw_devices: HashMap::new(),
                 wake_sync: WakeSync::default(),
+                cycle_since: None,
+                cycle_waiting: Vec::new(),
             })
         });
         log::append("tray started");
@@ -504,6 +515,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     relit.done
                 };
                 app.spectrum_applied(&relit);
+                app.follow_cycle();
             });
             0
         }
@@ -513,6 +525,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             // rather than lose the wake.
             if with_app(|app| app.spectrum_due()).is_none() {
                 SetTimer(hwnd, TIMER_SPECTRUM_WAKE, SETTLE_MS, None);
+            }
+            0
+        }
+        WM_TIMER if wparam == TIMER_SPECTRUM_CYCLE => {
+            KillTimer(hwnd, TIMER_SPECTRUM_CYCLE);
+            // Busy: look again shortly; it sets itself for the next boundary.
+            if with_app(|app| app.cycle_due()).is_none() {
+                SetTimer(hwnd, TIMER_SPECTRUM_CYCLE, SETTLE_MS, None);
             }
             0
         }
@@ -645,7 +665,12 @@ impl App {
                 .map(|(_, name)| name)
                 .collect();
             let targets = if apply_all { engine.all_keys() } else { new };
-            (engine.apply(&targets), targets, names, gone, engine.synapse().to_vec())
+            let started = Instant::now();
+            let reports = engine.apply(&targets);
+            if apply_all {
+                engine.spectrum_restarted(started);
+            }
+            (reports, targets, names, gone, engine.synapse().to_vec())
         };
         if !new_names.is_empty() {
             log::append(&format!("found: {}", new_names.join(", ")));
@@ -756,7 +781,13 @@ impl App {
         }
         let Some(pid) = self.raw_pid(header.hDevice) else { return };
         let now = Instant::now();
-        let Some(wake) = self.wake_sync.input(pid, now) else { return };
+        let wake = self.wake_sync.input(pid, now);
+        if self.cycle_waiting.contains(&pid) {
+            // In use again after a cycle restart waited for it.
+            self.cycle_waiting.clear();
+            self.arm_cycle();
+        }
+        let Some(wake) = wake else { return };
         let settings = TraySettings::load();
         if !settings.spectrum_wake_sync {
             // Turned off in the editor since the tray started.
@@ -908,6 +939,78 @@ impl App {
             }
         }
         self.wake_sync.applied(&pids);
+    }
+
+    /// The Spectrum cycle beat, when it is set up: wake sync on, and a cycle length set.
+    fn spectrum_cycle(&self) -> Option<wake_sync::Cycle> {
+        if !self.wake_sync_on {
+            return None;
+        }
+        let settings = TraySettings::load();
+        settings.spectrum_cycle().filter(|_| settings.spectrum_wake_sync)
+    }
+
+    /// On the lights beat: Spectrum was restarted on every device together since the cycle
+    /// timer was set (a sync, Re-sync now, the profiles sent to all), so count from then.
+    fn follow_cycle(&mut self) {
+        if !self.wake_sync_on {
+            return;
+        }
+        let since = self.engine().spectrum_since();
+        if since != self.cycle_since {
+            self.cycle_since = since;
+            self.cycle_waiting.clear();
+            if let Some(delay) = self.arm_cycle() {
+                log::append(&format!("Spectrum cycle: next restart in {} s, on a cycle boundary", delay.as_secs()));
+            }
+        }
+    }
+
+    /// Set the cycle timer for the next restart counted from `cycle_since`.
+    fn arm_cycle(&mut self) -> Option<Duration> {
+        let (Some(cycle), Some(since)) = (self.spectrum_cycle(), self.cycle_since) else { return None };
+        let now = Instant::now();
+        let delay = match cycle.realign(since, now) {
+            Realign::Now => Duration::ZERO,
+            Realign::At(at) => at.saturating_duration_since(now),
+        };
+        let ms = u32::try_from(delay.as_millis()).unwrap_or(u32::MAX).max(10);
+        unsafe { SetTimer(self.hwnd, TIMER_SPECTRUM_CYCLE, ms, None) };
+        Some(delay)
+    }
+
+    /// The cycle timer fired: on a boundary, restart Spectrum on the devices if all of them
+    /// are in use. One that isn't is waited for (its next input sets the timer again); away,
+    /// or with fewer than two on Spectrum, the next sync or the way back counts again.
+    fn cycle_due(&mut self) {
+        let (Some(cycle), Some(since)) = (self.spectrum_cycle(), self.cycle_since) else { return };
+        let now = Instant::now();
+        if let Realign::At(_) = cycle.realign(since, now) {
+            self.arm_cycle();
+            return;
+        }
+        let pids = match self.engine().spectrum_pids() {
+            Ok(pids) if pids.len() >= 2 => pids,
+            _ => return,
+        };
+        let idle: Vec<u16> = pids.iter().copied().filter(|&pid| !self.wake_sync.in_use(pid, now, wake_sync::IN_USE)).collect();
+        if !idle.is_empty() {
+            log::append(&format!(
+                "Spectrum cycle: due, waiting for input from {}; {}",
+                wake_sync::list(&idle),
+                self.wake_sync.describe(now)
+            ));
+            self.cycle_waiting = idle;
+            return;
+        }
+        let minutes = now.saturating_duration_since(since).as_secs() / 60;
+        let writes = self.engine().restart_spectrum(&pids, 0);
+        // All taken: the lights beat sees the new restart and counts from it. Otherwise the
+        // next sync does.
+        log::append(&format!(
+            "Spectrum cycle: restart on a cycle boundary, {minutes} min after the last: {}",
+            describe_writes(&writes)
+        ));
     }
 
     fn device_events(&mut self) {

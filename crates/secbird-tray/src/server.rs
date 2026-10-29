@@ -228,7 +228,7 @@ impl Server {
             ("GET", "/api/settings") => Ok(settings_json(&engine)),
             ("GET", "/api/export") => Store::load(&config_dir().join("profiles.json"))
                 .and_then(|s| serde_json::to_value(&s).map_err(|e| Error::Db(e.to_string()))),
-            ("POST", "/api/resync-spectrum") => Ok(resync_spectrum(&engine)),
+            ("POST", "/api/resync-spectrum") => Ok(resync_spectrum(&mut engine)),
             ("POST", path) => post(&mut engine, path, &req.body),
             _ => return Response::text("404 Not Found", "Not found"),
         };
@@ -571,7 +571,7 @@ fn sync(engine: &mut Engine, color: &str, effect: &str) -> Result<Value, Error> 
 
 /// The app's own settings, for the editor's Settings page.
 /// "Re-sync now": restart Spectrum on every device showing it, whether or not it woke.
-fn resync_spectrum(engine: &Engine) -> Value {
+fn resync_spectrum(engine: &mut Engine) -> Value {
     let pids = match engine.spectrum_pids() {
         Ok(pids) if pids.len() >= 2 => pids,
         Ok(_) => return json!({ "zones": 0, "reason": "Set Spectrum cycling on at least two devices first" }),
