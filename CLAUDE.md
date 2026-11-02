@@ -441,6 +441,13 @@ Osservazione dell'utente (29/10, dopo la terza prova): «dopo un po' i dispositi
      - Le tre PR sono rimaste aperte e #69 risulta in conflitto solo per quel messaggio. Proposta all'utente: chiuderle con un ringraziamento (azione pubblica, serve il suo ok).
      - #70: upstream `main` unito in `spectrum-wake-sync` (`dd5ea88`, merge senza force-push). Conflitti solo in `engine.rs`/`win.rs`, risolti tenendo il lato del branch, che contiene il codice di #68 identico a `main`. Ora il diff di #70 verso `main` è solo la sync (8 file) e GitHub la dà unibile.
    - **29/10, deriva con dispositivi svegli:** riavvio a fine giro sul branch sperimentale (`1910dfb`, §4.1). Prossimo passo: l'utente misura la durata del giro e il tempo dopo cui lo sfasamento si vede; poi si imposta `spectrum_cycle_ms` in `tray.json` (a tray chiusa) e si prova. Solo se funziona va proposto upstream, come PR separata o come aggiunta a #70.
+   - **2/11, mouse che si blocca 1–2 s ogni tanto (0.5.1 ufficiale installata):**
+     - **Fatti dal log e dal codice:**
+       - Dal 31/10 il profilo del mouse ha una rimappatura, `side-forward` → `key:q`. `profiles.bak` del 28/10 non ne aveva.
+       - Con almeno una rimappatura, la 0.5.1 rilegge un tasto dal mouse wireless ogni 20 s (`TIMER_BUTTONS`, `Profile::buttons_lost` → `dev.input`, GET con fino a 30 tentativi di lettura). Se la lettura è cambiata, rimanda le rimappature (`apply_buttons`).
+       - Dal 31/10 nel log ci sono 8 righe `button remaps were gone (asleep?), sent Default again`.
+     - **Ipotesi, NON confermata:** il blocco viene da quelle letture o dal reinvio.
+     - **Prova chiesta all'utente:** usare il PC 15–20 minuti con la tray chiusa (Exit). Se i blocchi spariscono, riaprirla con `side-forward` riportato a Forward, così il controllo non manda nulla al mouse. Se i blocchi restano anche a tray chiusa, la causa è radio o USB (dongle su porta USB 3, distanza, interferenze), non Secretarybird.
 2. Tenere separato il branch `experiment-spectrum-resync-on-wake` dalla PR RGB. Il codice non ancora verificato non deve finire nella patch upstream.
 3. Gestire la PR RGB isolata appena opportuno con il pulsante GitHub “Create pull request” al link indicato. È indipendente dalla sincronizzazione.
 4. Dopo Spectrum verificare ancora button remapping e profili DPI, stabilità wireless duratura, eventuale allineamento RGB al risveglio di tastiera sola, e comportamenti in caso di lock/wake del PC.
