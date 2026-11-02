@@ -458,6 +458,16 @@ Osservazione dell'utente (29/10, dopo la terza prova): «dopo un po' i dispositi
      - **Prova:** almeno un'ora a tray chiusa.
        - Se i blocchi spariscono: build diagnostica sulla 0.5.1 che registra ogni richiesta HID al mouse con orario e durata (nessun traffico in più), più una voce di menu "segna blocco" da confrontare con il log.
        - Se i blocchi restano: radio o USB.
+     - **Esito (2/11):** «l'ha fatto anche col programma spento». **Secretarybird in esecuzione è escluso come causa.** Il profilo del mouse non imposta il polling e non ha altre impostazioni sospette.
+     - **Controlli in sola lettura sul PC:**
+       - Dongle tastiera: `Port_#0010.Hub_#0005`. Dongle mouse: `Port_#0001.Hub_#0002`. Sono su due hub radice xHCI ("USB 3.0") diversi; la porta fisica non si deduce.
+       - Sospensione selettiva USB attiva sia con alimentatore sia a batteria (indice 1).
+       - Wi-Fi del PC disconnesso (rete via Ethernet); Bluetooth presente.
+     - **Da chiedere all'utente:** il blocco avviene durante il movimento o al primo movimento dopo una pausa? Si blocca anche la tastiera?
+     - **Prove suggerite all'utente** (impostazioni di sistema: le cambia lui):
+       - dongle del mouse vicino al mouse con la prolunga, lontano da porte, dischi e hub USB 3 e dal dongle della tastiera;
+       - un'ora con il cavo;
+       - sospensione selettiva USB disattivata, e "Consenti al computer di spegnere il dispositivo" tolto su hub e ricevitore.
 2. Tenere separato il branch `experiment-spectrum-resync-on-wake` dalla PR RGB. Il codice non ancora verificato non deve finire nella patch upstream.
 3. Gestire la PR RGB isolata appena opportuno con il pulsante GitHub “Create pull request” al link indicato. È indipendente dalla sincronizzazione.
 4. Dopo Spectrum verificare ancora button remapping e profili DPI, stabilità wireless duratura, eventuale allineamento RGB al risveglio di tastiera sola, e comportamenti in caso di lock/wake del PC.
