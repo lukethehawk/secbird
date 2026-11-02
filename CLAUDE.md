@@ -468,6 +468,7 @@ Osservazione dell'utente (29/10, dopo la terza prova): «dopo un po' i dispositi
        - dongle del mouse vicino al mouse con la prolunga, lontano da porte, dischi e hub USB 3 e dal dongle della tastiera;
        - un'ora con il cavo;
        - sospensione selettiva USB disattivata, e "Consenti al computer di spegnere il dispositivo" tolto su hub e ricevitore.
+     - **Prima prova in corso (2/11):** l'utente ha spostato il dongle del mouse da una porta rossa USB 10 Gbps (MSI) a una blu da 5 Gbps. Ora è su `Port_#0007.Hub_#0005`, **lo stesso hub radice della tastiera** (controller AMD USB 3.10). È ancora una porta USB 3, quindi questa prova non esclude l'interferenza USB 3. Cambiano il controller e la posizione. Sospensione selettiva invariata. Esito: da sapere.
 2. Tenere separato il branch `experiment-spectrum-resync-on-wake` dalla PR RGB. Il codice non ancora verificato non deve finire nella patch upstream.
 3. Gestire la PR RGB isolata appena opportuno con il pulsante GitHub “Create pull request” al link indicato. È indipendente dalla sincronizzazione.
 4. Dopo Spectrum verificare ancora button remapping e profili DPI, stabilità wireless duratura, eventuale allineamento RGB al risveglio di tastiera sola, e comportamenti in caso di lock/wake del PC.
