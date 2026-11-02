@@ -448,6 +448,16 @@ Osservazione dell'utente (29/10, dopo la terza prova): «dopo un po' i dispositi
        - Dal 31/10 nel log ci sono 8 righe `button remaps were gone (asleep?), sent Default again`.
      - **Ipotesi, NON confermata:** il blocco viene da quelle letture o dal reinvio.
      - **Prova chiesta all'utente:** usare il PC 15–20 minuti con la tray chiusa (Exit). Se i blocchi spariscono, riaprirla con `side-forward` riportato a Forward, così il controllo non manda nulla al mouse. Se i blocchi restano anche a tray chiusa, la causa è radio o USB (dongle su porta USB 3, distanza, interferenze), non Secretarybird.
+     - **Aggiornamento dell'utente:** «è successo randomicamente anche dopo diversi minuti, non dopo 20 secondi». Il blocco non è periodico a 20 s, quindi il sospetto sulla lettura ogni 20 s si indebolisce.
+     - **Traffico della 0.5.1 verso il mouse:**
+       - lettura del tasto ogni 20 s (solo con rimappature);
+       - batteria ogni 5 min (`TIMER_BATTERY`), e a ogni rescan;
+       - rescan a +4/+15/+45 s dopo avvio e resume, poi ogni 60 s per 30 min finché un dispositivo non risponde, e a ogni `WM_DEVICECHANGE`;
+       - reinvio della rimappatura (8 volte dal 31/10).
+     - Nel registro eventi di Windows (Kernel-PnP/Configuration e System, ultimi 4 giorni) non c'è nessun evento con VID_1532: nessuna reinstallazione o reset USB registrato, anche se Windows non registra ogni riconnessione. Nel log della tray non ci sono `gone:`/`found:` durante l'uso.
+     - **Prova:** almeno un'ora a tray chiusa.
+       - Se i blocchi spariscono: build diagnostica sulla 0.5.1 che registra ogni richiesta HID al mouse con orario e durata (nessun traffico in più), più una voce di menu "segna blocco" da confrontare con il log.
+       - Se i blocchi restano: radio o USB.
 2. Tenere separato il branch `experiment-spectrum-resync-on-wake` dalla PR RGB. Il codice non ancora verificato non deve finire nella patch upstream.
 3. Gestire la PR RGB isolata appena opportuno con il pulsante GitHub “Create pull request” al link indicato. È indipendente dalla sincronizzazione.
 4. Dopo Spectrum verificare ancora button remapping e profili DPI, stabilità wireless duratura, eventuale allineamento RGB al risveglio di tastiera sola, e comportamenti in caso di lock/wake del PC.
