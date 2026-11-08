@@ -85,6 +85,16 @@ Interpretazione corretta: **il trigger di wake e il riavvio Spectrum funzionano 
 - L'utente ha confermato: il mouse **non si collega più** al dongle tastiera e funziona di nuovo soltanto collegando il proprio dongle. `FFFF` è uno slot libero.
 - Utility originariamente definita “non ancora validata su 02C9” nei messaggi/commenti; **il test fisico ha successivamente validato questa singola operazione**, non generalizzarla ad altri dongle.
 - **NON ESEGUIRE nuovamente unpair** se il pairing attuale è funzionante; rischio configurazione periferiche.
+- **Versione "doppio clic" (8/11/2026, commit `b3b24b9` sullo stesso branch), su richiesta dell'utente** («mi fai un eseguibile comodo per rifarlo?»):
+  - Stessa logica e stesso comando: discovery del branch, txid FF, una sola SET 00:42 con payload `00 EA`, nessun retry, rilettura di 00:BF.
+  - Cambia l'uso:
+    - niente flag `--execute`: legge sempre prima e poi chiede di scrivere `UNPAIR 00EA` (maiuscole o minuscole);
+    - testi in italiano e la finestra aspetta Invio prima di chiudersi;
+    - se `secbird-tray.exe` è aperto chiede di chiuderlo (controllo con `tasklist`);
+    - se il dongle o la tastiera non rispondono, propone di riprovare.
+  - Preflight leggermente allargato: accetta anche slot liberi `FFFF` accanto alla tabella verificata. Dispositivi sconosciuti, tastiera non collegata o PID doppi bloccano comunque.
+  - CI: https://github.com/lukethehawk/secbird/actions/runs/42527064301, success (clippy, 3 test, build). Artifact `guarded-02c9-unpair-00ea`, conservato 30 giorni. L'exe è scaricato in `unpair-tool/` nella cartella locale (esclusa da git con `.git/info/exclude`).
+  - **Non è stato eseguito da Claude**, nemmeno in sola lettura. Lo avvia l'utente.
 
 ### 3.4 Correzione RGB Basilisk: verificata e pronta per PR
 
@@ -389,7 +399,7 @@ Osservazione dell'utente (29/10, dopo la terza prova): «dopo un po' i dispositi
 | `fix-basilisk-v4-hyperspeed-rgb` | `8819d13a6444b8384c730ee248f49a91bbc30235` | Patch RGB **testata**, isolata, pronta per upstream PR. |
 | `test-02c9-shared-hyperspeed-receiver` | `f4658023a9c2b4c6266b2c5d03b5f7062e94dc2c` | Test/build Windows; correzioni RGB, supporto receiver. |
 | `support-02c9-shared-hyperspeed-receiver` | `7c061b1d6f44d251c2ee1ddd0415e2ca790d864c` | Discovery Multi-Device su un dongle. |
-| `tool-unpair-00ea-from-02c9` | `9192ae127038a873d6a89e48a8b581904157253a` | Utility **usata con successo**; storica, non ri-eseguire. |
+| `tool-unpair-00ea-from-02c9` | `9192ae127038a873d6a89e48a8b581904157253a`, poi `b3b24b9` (8/11) | Utility **usata con successo**; storica, non ri-eseguire senza motivo. Dall'8/11 c'è la versione da doppio clic (§3.3). |
 | `experiment-spectrum-resync-on-wake` | `09b0cc35b55db2e8213fb7536381fc0616d22f63` | **Prototipo con sync parzialmente funzionante**: uno dorme funziona; entrambi dormono fallisce. |
 | `read-only-hyperspeed-multidevice-diagnostics` | `8844c3315b3b1ed6021e40d6ffab80f95bc10c45` | Sola lettura/diagnostica. |
 | `test-hyperspeed-multidevice-diagnostics` | `78ce18ff0643c400531f0c0b114a82159065a28c` | Diagnostica iniziale. |
