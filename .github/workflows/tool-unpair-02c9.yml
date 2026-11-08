@@ -25,4 +25,4 @@ jobs:
         with:
           name: guarded-02c9-unpair-00ea
           path: target/release/secbird-unpair-shared-mouse.exe
-          retention-days: 7
+          retention-days: 30
