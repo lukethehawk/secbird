@@ -45,8 +45,12 @@ thread_local! {
 
 fn with_state(f: impl FnOnce(&mut State)) {
     STATE.with(|s| {
-        if let Some(app) = s.borrow_mut().as_mut() {
-            f(app);
+        // SetWindowTextW can synchronously generate EN_CHANGE while a callback
+        // already owns State. Ignore nested notifications rather than panic.
+        if let Ok(mut guard) = s.try_borrow_mut() {
+            if let Some(app) = guard.as_mut() {
+                f(app);
+            }
         }
     });
 }
