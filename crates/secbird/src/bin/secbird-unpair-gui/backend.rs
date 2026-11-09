@@ -49,7 +49,7 @@ pub fn parse_slots(args: &[u8]) -> Result<Vec<Slot>, String> {
         return Err(format!("Numero slot sospetto: {n}"));
     }
     let b = args.get(1..1 + 3 * n).ok_or("Risposta associazioni incompleta")?;
-    let slots = b.chunks_exact(3).map(|a| Slot {
+    let slots = b.as_chunks::<3>().0.iter().map(|a| Slot {
         connected: a[0],
         pid: u16::from_be_bytes([a[1], a[2]]),
     }).collect::<Vec<_>>();
