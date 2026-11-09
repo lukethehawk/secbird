@@ -1,12 +1,12 @@
 //! Windows native UI: portable, no WebView, no extra runtime.
 use super::backend::{self, Receiver, ScanResult, UnpairResult};
 use std::cell::RefCell;
-use std::ffi::c_void;
 use std::mem::zeroed;
 use std::ptr::{null, null_mut};
 use std::thread;
 use windows_sys::Win32::Foundation::*;
-use windows_sys::Win32::Graphics::Gdi::{GetStockObject, DEFAULT_GUI_FONT};
+use windows_sys::Win32::Graphics::Gdi::{GetStockObject, DEFAULT_GUI_FONT, WHITE_BRUSH, HBRUSH};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -67,7 +67,7 @@ unsafe fn label(parent: HWND, title: &str, x: i32, y: i32, w: i32, h: i32) -> HW
     widget(parent, "STATIC", title, x, y, w, h, 0, 0)
 }
 unsafe fn button(parent: HWND, title: &str, x: i32, y: i32, w: i32, h: i32, id: u16) -> HWND {
-    widget(parent, "BUTTON", title, x, y, w, h, BS_PUSHBUTTON | WS_TABSTOP, id)
+    widget(parent, "BUTTON", title, x, y, w, h, BS_PUSHBUTTON as u32 | WS_TABSTOP, id)
 }
 unsafe fn set_text(hwnd: HWND, message: &str) {
     SetWindowTextW(hwnd, wide(message).as_ptr());
@@ -112,14 +112,13 @@ impl State {
         label(hwnd, "3. Conferma manuale (nessuna rimozione automatica)", 22, 308, 710, 23);
         let confirm_label = label(hwnd, "Seleziona un'associazione. Le operazioni non validate sono sperimentali.", 22, 333, 850, 39);
         let confirmation = widget(hwnd, "EDIT", "", 22, 376, 482, 31,
-            ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, ID_CONFIRM);
+            ES_AUTOHSCROLL as u32 | WS_BORDER | WS_TABSTOP, ID_CONFIRM);
         let remove_btn = button(hwnd, "Rimuovi associazione", 520, 376, 205, 32, ID_REMOVE);
         label(hwnd, "Stato e diagnostica", 22, 426, 240, 22);
         let status = label(hwnd, "Pronto. Premi Rileva / aggiorna.", 22, 453, 858, 37);
         let log = widget(hwnd, "EDIT", "Nessun comando HID di modifica inviato.", 22, 500, 864, 135,
-            ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_BORDER | WS_VSCROLL, 0);
+            (ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL) as u32 | WS_BORDER | WS_VSCROLL, 0);
         EnableWindow(remove_btn, 0);
-        let _ = SetFocus(scan_btn);
         Self { hwnd, receiver_list, pairing_list, scan_btn, remove_btn,
             confirmation, confirm_label, status, log,
             receivers: Vec::new(), selected_receiver: None, selected_slot: None, busy: false }
@@ -317,7 +316,7 @@ pub fn run() {
             lpfnWndProc: Some(wndproc),
             hInstance: instance,
             hCursor: LoadCursorW(null_mut(), IDC_ARROW),
-            hbrBackground: (COLOR_WINDOW as usize + 1) as HBRUSH,
+            hbrBackground: GetStockObject(WHITE_BRUSH) as HBRUSH,
             lpszClassName: class.as_ptr(),
             ..zeroed()
         };
@@ -331,7 +330,6 @@ pub fn run() {
             null_mut(), null_mut(), instance, null_mut());
         if hwnd.is_null() { return; }
         ShowWindow(hwnd, SW_SHOW);
-        UpdateWindow(hwnd);
         let mut message: MSG = zeroed();
         while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
             TranslateMessage(&message);
