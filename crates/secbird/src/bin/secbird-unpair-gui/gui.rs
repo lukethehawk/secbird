@@ -17,7 +17,6 @@ const ID_RECEIVER: u16 = 102;
 const ID_PAIRING: u16 = 103;
 const ID_CONFIRM: u16 = 104;
 const ID_REMOVE: u16 = 105;
-const ID_COPY: u16 = 106;
 
 enum WorkerReply {
     Scan(Result<ScanResult, String>),
@@ -57,6 +56,7 @@ fn with_state(f: impl FnOnce(&mut State)) {
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
+#[expect(clippy::too_many_arguments, reason = "Win32 control placement needs position, dimensions and ID")]
 unsafe fn widget(parent: HWND, class: &str, name: &str, x: i32, y: i32, w: i32, h: i32, style: u32, id: u16) -> HWND {
     let handle = CreateWindowExW(
         0, wide(class).as_ptr(), wide(name).as_ptr(),
